@@ -1,11 +1,14 @@
 import JSZip from 'jszip';
 import { createDesignFile } from './design';
+import { serializeSTEP } from './step';
 import type { ModelData, PartData, Vec3 } from './types';
 
-export function partFilename(part: PartData): string {
-  if (part.kind === 'outer') return 'outer_box.stl';
-  if (part.kind === 'lid') return part.name.includes('外套') ? 'sleeve_lid.stl' : 'inset_lid.stl';
-  return `insert_${part.id.replace('inner-', '').padStart(2, '0')}.stl`;
+export type ExportFormat = 'step' | 'stl';
+
+export function partFilename(part: PartData, format: ExportFormat = 'stl'): string {
+  if (part.kind === 'outer') return `outer_box.${format}`;
+  if (part.kind === 'lid') return `${part.name.includes('外套') ? 'sleeve_lid' : 'inset_lid'}.${format}`;
+  return `insert_${part.id.replace('inner-', '').padStart(2, '0')}.${format}`;
 }
 
 /** Binary STL stores mm coordinates in the part's print orientation, never scene transforms. */
@@ -61,31 +64,34 @@ export function layoutPrintPlate(parts: PartData[], spacing = 8): { positions: F
   return { positions, indices, bounds: [width, depth, height], placements };
 }
 
-export function createManifest(model: ModelData): object {
+export function createManifest(model: ModelData, format: ExportFormat = 'stl'): object {
   return {
     format: 'openboxhub-parametric-kit', version: 1, units: 'mm', generatedAt: new Date().toISOString(),
     params: model.params, groups: model.groups, overrides: model.overrides,
     metrics: model.metrics, warnings: model.warnings,
-    printOrientation: 'All STL files are centered in XY, rest on Z=0, and use millimeters. Lid top face rests on the bed; its locating skirt faces up.',
-    printNotes: 'Import individual STL files into Bambu Studio as separate objects, then arrange and slice. Check bed dimensions. Export contains geometry only, no filament or printer profile. Fit clearance may need calibration for your printer and material.',
-    parts: model.parts.map(part => ({ id: part.id, name: part.name, file: partFilename(part),
+    printOrientation: 'All part files are centered in XY, rest on Z=0, and use millimeters. Lid top face rests on the bed; its locating skirt faces up.',
+    printNotes: 'Import individual part files into Bambu Studio as separate objects, then arrange and slice. Check bed dimensions. Export contains geometry only, no filament or printer profile. Fit clearance may need calibration for your printer and material.',
+    parts: model.parts.map(part => ({ id: part.id, name: part.name, file: partFilename(part, format),
       kind: part.kind, bounds: part.bounds, dimensions: part.dimensions, volumeMm3: part.volume, cells: part.cellIds,
       assemblyPosition: part.assemblyPosition, assemblyRotation: part.assemblyRotation ?? [0, 0, 0] })),
   };
 }
 
-export async function createKitZIP(model: ModelData): Promise<Blob> {
+export async function createKitZIP(model: ModelData, format: ExportFormat = 'stl'): Promise<Blob> {
   const zip = new JSZip();
-  for (const part of model.parts) zip.file(partFilename(part), serializeSTL(part));
-  zip.file('manifest.json', JSON.stringify(createManifest(model), null, 2));
+  for (const part of model.parts) {
+    const filename = partFilename(part, format);
+    zip.file(filename, format === 'step' ? serializeSTEP([part], filename) : serializeSTL(part));
+  }
+  zip.file('manifest.json', JSON.stringify(createManifest(model, format), null, 2));
   const design = createDesignFile({ params: model.params, groups: model.groups, overrides: model.overrides, locked: false });
   zip.file('design.json', await design.blob.text());
   zip.file('README.txt', [
     'OpenBoxHub 参数化收纳盒',
-    '所有 STL 使用毫米 (mm)，每个零件均独立、平放于 Z=0。',
-    '在 Bambu Studio 中导入 STL 作为独立对象，自动摆盘并检查打印机平台尺寸后切片。',
+    `所有 ${format.toUpperCase()} 使用毫米 (mm)，每个零件均独立、平放于 Z=0。`,
+    `在 Bambu Studio 中导入 ${format.toUpperCase()} 作为独立对象，自动摆盘并检查打印机平台尺寸后切片。`,
     '盖子已按顶板朝下、裙边朝上导出。不要按装配展示的朝向打印盖子。',
-    'STL 不保存单位和打印配置；导入时使用毫米，不缩放。',
+    format === 'step' ? 'STEP 为 AP214 分面实体，保留当前网格精度，不包含解析曲面或参数化建模历史。' : 'STL 不保存单位和打印配置；导入时使用毫米，不缩放。',
     '默认内盒单边间隙为 gap，相邻内盒间隙为 2×gap；独立调整尺寸后以实际几何为准。',
     '所有盖型统一为内盒预留 lidDepth + lidClearance 高度，便于换盖。',
     '实际配合受材料、机器和切片影响，建议先打印一套小尺寸校准件。',
@@ -96,16 +102,28 @@ export async function createKitZIP(model: ModelData): Promise<Blob> {
 }
 
 /** Prepare the complete file before the user clicks its native browser download link. */
-export async function createExportFile(model: ModelData, target: string): Promise<{ blob: Blob; filename: string }> {
+export async function createExportFile(model: ModelData, target = 'plate', format: ExportFormat = 'step'): Promise<{ blob: Blob; filename: string }> {
+  if (format !== 'step' && format !== 'stl') throw new Error('请选择 STEP 或 STL 导出格式。');
   if (target === 'kit') return {
-    blob: await createKitZIP(model),
-    filename: `openboxhub_${model.params.width}x${model.params.depth}x${model.params.height}_mm.zip`,
+    blob: await createKitZIP(model, format),
+    filename: `openboxhub_${model.params.width}x${model.params.depth}x${model.params.height}_${format}_mm.zip`,
   };
-  if (target === 'plate') return {
-    blob: new Blob([serializeSTL(layoutPrintPlate(model.parts))], { type: 'model/stl' }),
-    filename: 'openboxhub_all_parts_flat_mm.stl',
-  };
+  if (target === 'plate') {
+    const plate = layoutPrintPlate(model.parts);
+    const filename = `openboxhub_all_parts_flat_mm.${format}`;
+    if (format === 'stl') return { blob: new Blob([serializeSTL(plate)], { type: 'model/stl' }), filename };
+    // Preserve one STEP solid per part, using exactly the same placements as STL.
+    // Keep translations in double precision: another Float32 rounding can collapse
+    // very short edges on tiny-radius corners when moved across the print plate.
+    const flatParts = model.parts.map((part, index) => ({ ...part,
+      positions: Float64Array.from(part.positions, (value, i) => value + plate.placements[index].offset[i % 3]),
+    }));
+    return { blob: new Blob([serializeSTEP(flatParts, filename)], { type: 'model/step' }), filename };
+  }
   const part = model.parts.find(part => part.id === target);
   if (!part) throw new Error('请重新选择需要导出的零件。');
-  return { blob: new Blob([serializeSTL(part)], { type: 'model/stl' }), filename: partFilename(part) };
+  const filename = partFilename(part, format);
+  return { blob: format === 'step'
+    ? new Blob([serializeSTEP([part], filename)], { type: 'model/step' })
+    : new Blob([serializeSTL(part)], { type: 'model/stl' }), filename };
 }

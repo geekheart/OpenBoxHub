@@ -14,18 +14,18 @@ module.setup();
 test('download files are complete without network or server storage', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => { throw new Error('Export must not make a network request'); });
   const model = buildModel(module, DEFAULT_PARAMS);
-  const single = await createExportFile(model, 'outer');
+  const single = await createExportFile(model, 'outer', 'stl');
   assert.equal(single.filename, 'outer_box.stl');
   assert.equal(single.blob.type, 'model/stl');
   assert.deepEqual(await single.blob.arrayBuffer(), serializeSTL(model.parts[0]));
-  const plate = await createExportFile(model, 'plate');
+  const plate = await createExportFile(model, 'plate', 'stl');
   assert.deepEqual(await plate.blob.arrayBuffer(), serializeSTL(layoutPrintPlate(model.parts)));
-  const kit = await createExportFile(model, 'kit');
+  const kit = await createExportFile(model, 'kit', 'stl');
   assert.ok(kit.filename.endsWith('_mm.zip'));
   const zip = await JSZip.loadAsync(await kit.blob.arrayBuffer());
   assert.equal(Object.keys(zip.files).filter(name => name.endsWith('.stl')).length, model.parts.length);
   assert.deepEqual(await zip.file('outer_box.stl')!.async('arraybuffer'), await single.blob.arrayBuffer());
-  await assert.rejects(createExportFile(model, 'missing-part'), /重新选择/);
+  await assert.rejects(createExportFile(model, 'missing-part', 'stl'), /重新选择/);
 });
 
 function close(actual: number, expected: number, tolerance = 0.0001): void {

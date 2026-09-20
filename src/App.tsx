@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Box, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleHelp, FileJson, FolderOpen, Expand, Eye, EyeOff, Grid2X2, Layers, LockKeyhole, Maximize, Merge, Minus, MousePointer2, Package, Plus, RotateCcw, RotateCw, Scan, ShieldCheck, SlidersHorizontal, Split, UnlockKeyhole, X } from 'lucide-react'
 import Scene, { INNER_COLORS, type CameraView, type ViewMode } from './Scene'
 import { DEFAULT_PARAMS, defaultGroups, partOverrideKey, type ModelData, type Params, type PartDimensions, type PartOverrides } from './types'
-import { createExportFile } from './export'
+import type { ExportFormat } from './export'
 import { createDesignFile, parseDesignFile, MAX_DESIGN_FILE_BYTES, type DesignConfig } from './design'
 import NumberField from './NumberField'
 import PartInspector from './PartInspector'
@@ -61,8 +61,9 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null)
   const [selection, setSelection] = useState<number[]>([])
   const [modal, setModal] = useState<'export' | 'design' | 'help' | null>(null)
-  const [exportTarget, setExportTarget] = useState('kit')
-  const [download, setDownload] = useState<{ href: string; filename: string; target: string; model: ModelData } | null>(null)
+  const [exportTarget, setExportTarget] = useState('plate')
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('step')
+  const [download, setDownload] = useState<{ href: string; filename: string; target: string; format: ExportFormat; model: ModelData } | null>(null)
   const [exportError, setExportError] = useState('')
   const [designDownload, setDesignDownload] = useState<{ href: string; filename: string; model: ModelData; locked: boolean } | null>(null)
   const [importing, setImporting] = useState(false)
@@ -199,19 +200,29 @@ export default function App() {
     if (modal !== 'export' || !model || busy || error) return
     let cancelled = false
     let href: string | undefined
-    void createExportFile(model, exportTarget).then(file => {
+    const fileWorker = new Worker(new URL('./export.worker.ts', import.meta.url), { type: 'module' })
+    fileWorker.onmessage = (event: MessageEvent<{ file?: { blob: Blob; filename: string }; error?: string }>) => {
       if (cancelled) return
-      href = URL.createObjectURL(file.blob)
-      setDownload({ href, filename: file.filename, target: exportTarget, model })
-    }).catch(error => {
-      if (!cancelled) setExportError(error instanceof Error ? error.message : '文件生成失败，请重新打开导出窗口。')
-    })
+      const { file, error: failure } = event.data
+      if (failure || !file) setExportError(failure || '文件生成失败，请重新打开导出窗口。')
+      else {
+        href = URL.createObjectURL(file.blob)
+        setDownload({ href, filename: file.filename, target: exportTarget, format: exportFormat, model })
+      }
+      fileWorker.terminate()
+    }
+    fileWorker.onerror = () => {
+      if (!cancelled) setExportError('导出引擎加载失败，请重新打开导出窗口。')
+      fileWorker.terminate()
+    }
+    fileWorker.postMessage({ model, target: exportTarget, format: exportFormat })
     return () => {
       cancelled = true
+      fileWorker.terminate()
       // Let an in-progress browser download acquire the Blob before releasing it.
       if (href) { const url = href; setTimeout(() => URL.revokeObjectURL(url), 30_000) }
     }
-  }, [modal, model, busy, error, exportTarget])
+  }, [modal, model, busy, error, exportTarget, exportFormat])
   useEffect(() => {
     setDesignDownload(null)
     if (modal !== 'design' || !model || busy || error) return
@@ -220,17 +231,16 @@ export default function App() {
     setDesignDownload({ href, filename: file.filename, model, locked })
     return () => { setTimeout(() => URL.revokeObjectURL(href), 30_000) }
   }, [modal, model, busy, error, locked])
-  const readyDownload = !busy && !error && download?.model === model && download?.target === exportTarget ? download : null
+  const readyDownload = !busy && !error && download?.model === model && download?.target === exportTarget && download?.format === exportFormat ? download : null
   const readyDesignDownload = !busy && !error && designDownload?.model === model && designDownload?.locked === locked ? designDownload : null
   const chosenPart = model?.parts.find(p => p.id === selected)
   const partValues = chosenPart ? chosenPart.kind === 'outer' ? { width: params.width, depth: params.depth, height: params.height, wall: params.wall, bottom: params.bottom } : { ...chosenPart.dimensions, ...overrides[chosenPart.overrideKey ?? ''] } : null
-  const mass = model ? model.metrics.totalVolume / 1000 * 1.24 : 0
   const field = (key: keyof Params, label: string, options: Partial<React.ComponentProps<typeof NumberField>> = {}) => <NumberField label={label} value={params[key] as number} onChange={v => update(key, v)} {...options} />
 
   return <div className="app-shell">
     <header className="app-header">
       <a className="brand" href="./" aria-label="OpenBoxHub 首页"><span className="brand-icon"><Box size={24} strokeWidth={1.6} /></span><span>OpenBox<em>Hub</em><span className="brand-sub">参数化收纳盒工坊</span></span></a>
-      <div className="header-actions"><button className="text-button design-file-button" aria-label="参数文件" onClick={() => { setImportError(''); setModal('design') }}><FileJson size={16} /><span>参数文件</span></button><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('help')}><CircleHelp size={19} /></button><span className="header-divider" /><button className="primary-button export-main" disabled={!model || busy || !!error} onClick={() => { setExportTarget('kit'); setModal('export') }}><ArrowDownToLine size={17} />导出 STL<ChevronDown size={14} /></button></div>
+      <div className="header-actions"><button className="text-button design-file-button" aria-label="参数文件" onClick={() => { setImportError(''); setModal('design') }}><FileJson size={16} /><span>参数文件</span></button><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('help')}><CircleHelp size={19} /></button><span className="header-divider" /><button className="primary-button export-main" disabled={!model || busy || !!error} onClick={() => { setExportFormat('step'); setExportTarget('plate'); setModal('export') }}><ArrowDownToLine size={17} />导出 STEP<ChevronDown size={14} /></button></div>
     </header>
 
     <div className="workspace">
@@ -288,11 +298,25 @@ export default function App() {
           <div className="canvas-hint"><MousePointer2 size={13} />拖动旋转<span />滚轮缩放<span />右键平移</div>
         </div>
 
-        <div className="summary-strip"><div className="summary-icon"><Package size={22} strokeWidth={1.5} /></div><div className="summary-item"><span>外盒尺寸</span><strong>{fmt(params.width)} <i>×</i> {fmt(params.depth)} <i>×</i> {fmt(params.height)}<small>mm</small></strong></div><div className="summary-item"><span>内部布局</span><strong>{groups.length}<small>个内盒 / {params.cols} × {params.rows} 格</small></strong></div><div className="summary-item"><span>默认内盒高度</span><strong>{model ? fmt(model.metrics.innerHeight) : '—'}<small>mm</small></strong></div><div className="summary-item material-stat"><span>实体体积</span><strong>{model ? fmt(model.metrics.totalVolume / 1000) : '—'}<small>cm³</small></strong></div><div className="summary-status"><span><Check size={13} />{busy ? '更新中' : error ? '待修正' : '毫米建模'}</span><small>STL · Bambu Studio</small></div></div>
+        <div className="summary-strip"><div className="summary-icon"><Package size={22} strokeWidth={1.5} /></div><div className="summary-item"><span>外盒尺寸</span><strong>{fmt(params.width)} <i>×</i> {fmt(params.depth)} <i>×</i> {fmt(params.height)}<small>mm</small></strong></div><div className="summary-item"><span>内部布局</span><strong>{groups.length}<small>个内盒 / {params.cols} × {params.rows} 格</small></strong></div><div className="summary-item"><span>默认内盒高度</span><strong>{model ? fmt(model.metrics.innerHeight) : '—'}<small>mm</small></strong></div><div className="summary-item material-stat"><span>实体体积</span><strong>{model ? fmt(model.metrics.totalVolume / 1000) : '—'}<small>cm³</small></strong></div><div className="summary-status"><span><Check size={13} />{busy ? '更新中' : error ? '待修正' : '毫米建模'}</span><small>STEP / STL · Bambu Studio</small></div></div>
       </main>
     </div>
 
-    {modal === 'export' && model && <Modal eyebrow="STL / ZIP" title="导出模型" onClose={() => setModal(null)}><p className="modal-description">文件由浏览器生成并下载。展示姿态不影响打印方向。</p><div className="export-choices"><button className={exportTarget === 'kit' ? 'selected' : ''} onClick={() => setExportTarget('kit')}><Package size={21} /><span><strong>整套零件 · ZIP</strong><small>{model.parts.length} 个独立 STL + 参数清单，推荐使用</small></span><span className="radio-dot">{exportTarget === 'kit' && <i />}</span></button><button className={exportTarget === 'plate' ? 'selected' : ''} onClick={() => setExportTarget('plate')}><Grid2X2 size={21} /><span><strong>平铺整套 · STL</strong><small>所有零件排开，可在切片软件中拆分重排</small></span><span className="radio-dot">{exportTarget === 'plate' && <i />}</span></button></div><label className="export-select-label">或单独导出一个零件<select aria-label="选择单独导出的零件" value={exportTarget === 'kit' || exportTarget === 'plate' ? '' : exportTarget} onChange={e => setExportTarget(e.target.value || 'kit')}><option value="">选择零件…</option>{model.parts.map(p => <option key={p.id} value={p.id}>{p.name} · {p.bounds.map(fmt).join(' × ')} mm</option>)}</select></label><div className="export-info"><ShieldCheck size={17} /><p>外盒与盖子分件打印；内盒底部朝下，盒盖平面朝下。ZIP 解压后将 STL 拖入 Bambu Studio，各零件作为独立对象导入，按打印机热床重新排盘。</p></div>{model.warnings.length > 0 && <div className="export-warnings">{model.warnings.map((w, i) => <p key={i}>{w}</p>)}</div>}<div className="export-footer"><span>{model.parts.length} 件 · 约 {fmt(mass)} g<small>按 PLA 实体体积估算，实际以切片为准</small></span>{readyDownload ? <a className="primary-button" href={readyDownload.href} download={readyDownload.filename} onClick={() => setToast(`已发起下载：${readyDownload.filename}，请在浏览器下载列表中查看`)}><ArrowDownToLine size={17} />下载文件</a> : <button className="primary-button" disabled>{!exportError && <span className="spinner" />}{exportError ? '生成失败' : '准备文件…'}</button>}</div>{exportError && <p className="inline-warning" role="alert">{exportError}</p>}</Modal>}
+    {modal === 'export' && model && <Modal eyebrow="STEP / STL / ZIP" title="导出模型" onClose={() => setModal(null)}>
+      <div className="export-format" role="group" aria-label="导出格式">
+        <button aria-pressed={exportFormat === 'step'} onClick={() => setExportFormat('step')}>STEP <small>默认</small></button>
+        <button aria-pressed={exportFormat === 'stl'} onClick={() => setExportFormat('stl')}>STL</button>
+      </div>
+      <div className="export-choices">
+        <button className={exportTarget === 'plate' ? 'selected' : ''} onClick={() => setExportTarget('plate')}><Grid2X2 size={21} /><span><strong>整套零件 · {exportFormat.toUpperCase()}</strong><small>{model.parts.length} 个零件平铺在同一文件中</small></span><span className="radio-dot">{exportTarget === 'plate' && <i />}</span></button>
+        <button className={exportTarget === 'kit' ? 'selected' : ''} onClick={() => setExportTarget('kit')}><Package size={21} /><span><strong>逐件打包 · ZIP</strong><small>{model.parts.length} 个独立 {exportFormat.toUpperCase()} + 参数清单</small></span><span className="radio-dot">{exportTarget === 'kit' && <i />}</span></button>
+      </div>
+      <label className="export-select-label">或单独导出一个零件<select aria-label="选择单独导出的零件" value={exportTarget === 'kit' || exportTarget === 'plate' ? '' : exportTarget} onChange={e => setExportTarget(e.target.value || 'plate')}><option value="">选择零件…</option>{model.parts.map(p => <option key={p.id} value={p.id}>{p.name} · {p.bounds.map(fmt).join(' × ')} mm</option>)}</select></label>
+      <div className="export-info"><ShieldCheck size={17} /><p>毫米单位，零件底部平放。导入 Bambu Studio 后按热床尺寸重新排盘。{exportFormat === 'step' && <><br />STEP 为分面实体，保留当前模型精度。</>}</p></div>
+      {model.warnings.length > 0 && <div className="export-warnings">{model.warnings.map((w, i) => <p key={i}>{w}</p>)}</div>}
+      <div className="export-footer"><span>{exportTarget === 'plate' || exportTarget === 'kit' ? model.parts.length : 1} 件 · {exportFormat.toUpperCase()}<small>{readyDownload ? readyDownload.filename : '正在生成文件'}</small></span>{readyDownload ? <a className="primary-button" href={readyDownload.href} download={readyDownload.filename} onClick={() => setToast(`已发起下载：${readyDownload.filename}，请在浏览器下载列表中查看`)}><ArrowDownToLine size={17} />下载文件</a> : <button className="primary-button" disabled>{!exportError && <span className="spinner" />}{exportError ? '生成失败' : '准备文件…'}</button>}</div>
+      {exportError && <p className="inline-warning" role="alert">{exportError}</p>}
+    </Modal>}
 
     {modal === 'design' && <Modal eyebrow="JSON" title="参数文件" onClose={closeDesignModal}>
       <p className="modal-description">导出当前设计，或导入参数继续编辑。刷新页面会恢复默认设计。</p>
@@ -301,7 +325,7 @@ export default function App() {
       {importError && <p className="import-error" role="alert">{importError}<span>当前设计未改变。</span></p>}
     </Modal>}
 
-    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择相邻格子合并。点击三维模型可单独编辑零件尺寸、壁厚与底厚。</p></div></li><li><span>03</span><div><strong>检查装配</strong><p>选择盒盖，切换组合、开盖、爆炸视图，拖动模型查看。</p></div></li><li><span>04</span><div><strong>导出与保存</strong><p>下载 ZIP，将独立 STL 导入 Bambu Studio。需要继续编辑时，通过「参数文件」导出 JSON；页面不保存历史记录。</p></div></li></ol></Modal>}
+    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择相邻格子合并。点击三维模型可单独编辑零件尺寸、壁厚与底厚。</p></div></li><li><span>03</span><div><strong>检查装配</strong><p>选择盒盖，切换组合、开盖、爆炸视图，拖动模型查看。</p></div></li><li><span>04</span><div><strong>导出与保存</strong><p>默认下载 STEP，也可选择 STL 或逐件 ZIP。导入 Bambu Studio 后重新排盘；通过「参数文件」保存 JSON，便于继续编辑。</p></div></li></ol></Modal>}
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>
 }
