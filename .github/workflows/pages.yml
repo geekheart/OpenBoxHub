@@ -3,6 +3,7 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+    tags: ['**']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -13,12 +14,14 @@ permissions: {}
 # Serialize production releases without interrupting an active deployment.
 # Pull requests have independent groups and can never publish the site.
 concurrency:
-  group: pages-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.event.pull_request.number) || 'pages-production' }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
   build:
     name: Test and build
+    if: github.event.deleted != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -51,14 +54,14 @@ jobs:
         run: pnpm build
 
       - name: Upload GitHub Pages artifact
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
   deploy:
     name: Publish site
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

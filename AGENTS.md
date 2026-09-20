@@ -103,7 +103,8 @@ Manifold、CrossSection 及运算产生的临时结果通常持有 WASM 句柄�
 
 - 仓库：`https://github.com/geekheart/OpenBoxHub`；默认发布分支：`main`。
 - 工作流：`.github/workflows/pages.yml`；Pages Source 使用 **GitHub Actions**。
-- 推送 `main` 或手动触发后，先安装锁定依赖并测试、构建，再将 `dist/` 作为 Pages artifact 部署。工作流权限按需要最小化，部署使用 `github-pages` environment。
+- 推送 `main`、推送任意 tag，或选择 `main` / tag 手动触发后，先安装锁定依赖并测试、构建，再将对应提交的 `dist/` 作为 Pages artifact 部署。PR 仅测试构建；删除 tag 不部署。
+- `github-pages` environment 允许 `main` 分支和 `*`、`**/*` 两个 tag 名称规则。生产发布共用并发组，避免分支与 tag 同时覆盖站点；工作流权限按需要最小化。
 - 保持 Vite 的相对 `base`，以支持 `https://geekheart.github.io/OpenBoxHub/` 的子路径。图片、Worker、WASM 不应依赖本机绝对路径。
 - 不提交 `node_modules/`、`dist/`、本地导出物、临时日志或认证信息。发布产物由 Actions 构建，不手工维护第二套站点代码。
 - 发布后确认工作流成功，并实际访问线上页面检查模型、静态资源和下载，再报告已上线。

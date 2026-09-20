@@ -101,14 +101,24 @@ pnpm dev --port 5173
 
 在线地址：**[geekheart.github.io/OpenBoxHub](https://geekheart.github.io/OpenBoxHub/)**
 
-仓库使用 [GitHub Actions 工作流](.github/workflows/pages.yml) 部署：推送到 `main` 后，安装锁定依赖、运行测试、构建，再将 `dist/` 发布到 GitHub Pages。也可以在仓库的 **Actions** 页面手动运行工作流。
+仓库使用 [GitHub Actions 工作流](.github/workflows/pages.yml) 部署：推送到 `main` 或推送任意 tag 后，安装锁定依赖、运行测试、构建，再将对应提交的 `dist/` 发布到 GitHub Pages。也可以在仓库的 **Actions** 页面选择 `main` 或 tag 手动运行。PR 只测试与构建。
+
+按 tag 发布示例（版本号按需修改）：
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+仅在本地创建 tag 不会触发部署；需将 tag 推送到 GitHub。tag 对应的提交须包含此工作流。
 
 部署自己的副本：
 
 1. Fork 本仓库，或把代码推送到自己的 GitHub 仓库。
 2. 进入 **Settings → Pages → Build and deployment**，将 **Source** 设为 **GitHub Actions**。
-3. 在 **Actions** 页面启用并运行部署工作流，或向 `main` 推送一次提交。
-4. 等待工作流完成，从 **Settings → Pages** 打开已发布地址。
+3. 在 **Settings → Environments → github-pages** 中允许 `main` 分支，以及 `*`、`**/*` 两个 tag 名称规则。
+4. 在 **Actions** 页面启用并运行部署工作流，或向 `main` 推送提交、推送 tag。
+5. 等待工作流完成，从 **Settings → Pages** 打开已发布地址。
 
 Vite 使用相对资源路径，支持仓库子目录部署；Worker 和 Manifold WASM 随构建产物一起发布。
 
