@@ -5,6 +5,7 @@ import type { Manifold } from 'manifold-3d';
 import { buildModel } from '../src/geometry';
 import { serializeSTL } from '../src/export';
 import { serializeSTEP } from '../src/step';
+import { readCAD } from './cad-reader';
 import { createCollisionWorld } from '../src/collision';
 import { advanceMotion, createMotionPlan, pathLength, sampleMotion } from '../src/motion';
 import type { MotionCursor, MotionOffsets, MotionPath, MotionPlan, ViewMode } from '../src/motion';
@@ -357,10 +358,10 @@ test('rapid mode changes and reversed explosion sliders retrace their branch bef
   } finally { oracle.dispose(); }
 });
 
-test('layered display motion leaves assembly transforms and canonical STEP/STL geometry unchanged', () => {
+test('layered display motion leaves assembly transforms and canonical STEP/STL geometry unchanged', async () => {
   const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 5, cols: 5 }, onionGroups(5));
   const stls = model.parts.map(serializeSTL);
-  const step = serializeSTEP(model.parts).split('\nDATA;\n')[1];
+  const step = await readCAD(await serializeSTEP(model));
   const positions = model.parts.map(part => new Float32Array(part.positions));
   const indices = model.parts.map(part => new Uint32Array(part.indices));
   const transforms = model.parts.map(part => ({ position: [...part.assemblyPosition], rotation: part.assemblyRotation && [...part.assemblyRotation] }));
@@ -381,5 +382,5 @@ test('layered display motion leaves assembly transforms and canonical STEP/STL g
     assert.deepEqual({ position: part.assemblyPosition, rotation: part.assemblyRotation }, transforms[index]);
     assert.deepEqual(serializeSTL(part), stls[index]);
   });
-  assert.equal(serializeSTEP(model.parts).split('\nDATA;\n')[1], step);
+  assert.deepEqual(await readCAD(await serializeSTEP(model)), step);
 });

@@ -10,7 +10,7 @@
     &nbsp; · &nbsp;
     <a href="#部署">部署指南</a>
   </p>
-  <p><code>纯前端</code> &nbsp; <code>独立零件编辑</code> &nbsp; <code>360° 预览</code> &nbsp; <code>STEP / STL / JSON</code></p>
+  <p><code>纯前端</code> &nbsp; <code>独立零件编辑</code> &nbsp; <code>360° 预览</code> &nbsp; <code>CAD STEP / FreeCAD / STL</code></p>
 </div>
 
 ![OpenBoxHub 参数化收纳盒工作台，左侧调整尺寸，右侧实时查看外盒、内盒与盒盖](docs/images/overview.png)
@@ -30,10 +30,11 @@
 | 可配置底板 | 实体、蜂窝、圆孔、方孔、长圆孔；调整孔宽、筋宽、内壁留边和长圆孔总长 |
 | 可替换盒盖 | 开放式无盖、外套式盒盖、内嵌定位盖；单独切换盖型时共用同一套盒体 |
 | 全屏 3D 预览 | 360° 旋转、缩放与平移；组合、开盖、爆炸视图，嵌套内盒自动分层展开，运动路径经过碰撞检查 |
-| 装配查看 | 组件显隐、文字按钮隐藏/显示盒盖、外盒透明、自动旋转、俯视与正视、点击选择零件 |
+| 装配查看 | 组件显隐、盒盖显示开关、外盒透明、自动旋转、俯视与正视、点击选择零件 |
 | 独立零件编辑 | 点击外盒、内盒或盒盖，分别修改长、宽、高、壁厚与底厚；非矩形内盒显示外接矩形尺寸 |
 | 参数文件 | 导入、导出 JSON，保存完整参数、合并布局、独立零件设置与外盒锁定状态 |
-| 本地下载 | 默认 STEP，可选 STL；整套平铺单文件、独立零件 ZIP 或单个零件 |
+| 本地下载 | 默认解析实体 STEP，可选 STL 和 FreeCAD 建模宏；整套、逐件 ZIP 或单个零件 |
+| FreeCAD 二次设计 | 原生草图、拉伸与切除步骤，修改后可保存为 FCStd 工程 |
 
 ## 从尺寸到结构
 
@@ -71,7 +72,7 @@ L 形、环形等非矩形内盒显示外接矩形尺寸，修改长宽会绕原
 
 ![回形内盒与中心内盒自动分层展开，隐藏盒盖后清楚查看嵌套布局](docs/images/layered-exploded.png)
 
-右上角组件栏提供「隐藏盒盖 / 显示盒盖」文字按钮。隐藏后取景只包含可见零件，导出文件仍保留盒盖。
+点击右上角组件栏的「盒盖」可切换显示。隐藏后取景只包含可见零件，导出文件仍保留盒盖。
 
 外套盖从盒体外侧套合；内嵌定位盖通过裙边进入内腔。自动生成的内盒统一预留 `定位边深度 + 盒盖单边配合间隙` 的顶部空间；独立内盒高度可在该预留后的可用范围内调整，并检查装配。
 
@@ -89,15 +90,28 @@ L 形、环形等非矩形内盒显示外接矩形尺寸，修改长宽会绕原
 
 ## 导出与打印
 
-默认导出为**整套平铺 STEP**，每个零件保留为独立实体。可切换为 STL，并选择整套单文件、独立零件 ZIP 或单个零件。文件由浏览器生成，点击「下载文件」即可保存。
+默认导出为**整套平铺 STEP**，每个零件保留为独立实体。可切换为 STL 或 FreeCAD 建模宏，并选择整套单文件、独立零件 ZIP 或单个零件。文件由浏览器生成，点击「下载文件」即可保存。
 
-![导出窗口：默认 STEP，可切换 STL，并选择整套单文件、独立零件 ZIP 或单个零件](docs/images/export.png)
+![导出窗口：默认 CAD STEP，可切换 STL 或 FreeCAD 建模宏](docs/images/export.png)
 
-STEP 使用现有闭合网格生成分面实体（`FACETED_BREP`），保留模型的面片精度，不恢复解析圆曲面或参数化特征。继续在 OpenBoxHub 编辑设计请保存 JSON。[OCCT STEP 文档](https://github.com/Open-Cascade-SAS/OCCT/blob/master/dox/user_guides/step/step.md)说明了这一实体类型。
+STEP 使用 [Replicad / OpenCascade](https://replicad.xyz/) 从参数轮廓、拉伸与布尔运算重新建模，保留完整平面和连续曲面，不经过 STL 转换。圆角和圆孔保持圆弧、圆柱面；非等比缩放后的曲线可为椭圆或样条。STEP 不携带 FreeCAD 的建模历史，需要可编辑步骤时选择 **FreeCAD**。
+
+**在 FreeCAD 中继续设计：**
+
+1. 选择「FreeCAD」并下载 `.FCMacro`。
+2. 用 FreeCAD 1.0 或更新版本打开宏，在「宏 → 宏…」中选中并执行。它会新建文档，生成每个零件的原生草图、Pad（拉伸）和 Pocket（切除）。
+3. 修改各零件参数集中的 `Height`、`BottomThickness`，或编辑草图与后续特征。参数表达式会同步更新相关步骤；如需直接调整某次拉伸长度，可先移除该属性的表达式。
+4. 保存为 `.FCStd`，以后直接打开工程继续编辑，无需再次运行宏。轮廓来自当前设计，不包含网页端行列合并的操作历史；调整分格布局仍可导入 JSON 回到 OpenBoxHub。
+
+![FreeCAD 中运行建模宏后的八个独立原生零件，按打印方向平铺](docs/images/freecad.png)
+
+可直接打开示例：[默认 3 × 2 布局的 FreeCAD 工程](examples/default_3x2/OpenBoxHub.FCStd)。每个盒子都有独立的参数集和建模步骤。
+
+继续在 OpenBoxHub 编辑设计请保存 JSON。
 
 ZIP 包含：
 
-- 每个外盒、内盒及盒盖的独立 STEP 或二进制 STL，取决于所选格式。
+- 每个外盒、内盒及盒盖的独立 STEP、二进制 STL 或 FreeCAD 宏，取决于所选格式。FreeCAD ZIP 还包含整套平铺宏。
 - `design.json`：可重新导入的设计参数、格子分组与独立零件设置。
 - `manifest.json`：参数、独立零件设置、零件信息与装配变换，也可用于导入。
 - `README.txt`：打印方向、单位及切片说明。
@@ -153,7 +167,7 @@ git push origin v1.0.1
 4. 在 **Actions** 页面启用并运行部署工作流，或向 `main` 推送提交、推送 tag。
 5. 等待工作流完成，从 **Settings → Pages** 打开已发布地址。
 
-Vite 使用相对资源路径，支持仓库子目录部署；Worker 和 Manifold WASM 随构建产物一起发布。
+Vite 使用相对资源路径，支持仓库子目录部署；Worker、Manifold 与 OpenCascade WASM 随构建产物一起发布。CAD 内核只在导出 STEP 或 FreeCAD 时加载。
 
 ### 任意静态服务器
 
@@ -185,8 +199,9 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory dist
 | [React](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/) + [Vite](https://vite.dev/) | 参数界面、状态管理与静态构建 |
 | [Three.js](https://threejs.org/) + OrbitControls | 实时 3D、相机交互与爆炸展示 |
 | [Manifold WASM](https://manifoldcad.org/) | 轮廓合并、偏移、裁切和实体布尔运算，生成闭合网格 |
+| [Replicad / OpenCascade WASM](https://replicad.xyz/) | 解析 CAD 实体、STEP 输出，以及 FreeCAD 草图轮廓 |
 | Web Worker | 在独立线程中执行建模、运动路径碰撞检查与文件生成 |
-| [JSZip](https://stuk.github.io/jszip/) | 在浏览器内打包 STEP/STL 零件与参数清单 |
+| [JSZip](https://stuk.github.io/jszip/) | 在浏览器内打包 CAD/STL 零件、FreeCAD 宏与参数清单 |
 
 ```text
 src/
@@ -199,7 +214,10 @@ src/
 ├── collision.ts         # 基于实体截面的连续扫掠碰撞检查
 ├── motion.ts            # 共用运动路径、阶段切换与反向移动
 ├── design.ts            # 参数 JSON 校验、导入与导出
-├── step.ts              # AP214 分面实体 STEP 序列化
+├── cad.ts               # 从参数重建解析 CAD 实体与建模步骤
+├── cad-types.ts         # 可移植的轮廓 / 拉伸 / 切除步骤
+├── step.ts              # 解析实体 STEP 导出
+├── freecad.ts           # 生成原生 FreeCAD 草图与特征树的宏
 ├── export.worker.ts     # 后台生成下载文件
 ├── export.ts            # 格式选择、STL、平铺布局、ZIP 与清单
 └── types.ts             # 参数、默认值与模型数据结构
@@ -215,4 +233,14 @@ pnpm build    # TypeScript 检查与生产构建
 
 测试覆盖闭合有向边、Float32 坐标焊接与退化面、尺寸与体积、装配与运动路径碰撞、独立零件编辑、盖型互换、L 形与环形合并、镂空孔阵列、参数文件往返与无效输入，以及无需网络的 STEP/STL/ZIP 导出。
 
-开发约定见 [AGENTS.md](AGENTS.md)。
+独立 CAD 验证使用实际 FreeCAD：`scripts/verify-cad-step.py` 读取 STEP，检查实体、曲面、尺寸，并执行挤出和切除；`scripts/verify-freecad.py` 执行宏，修改高度与底厚，再保存、重开工程并再次重算。FreeCAD 只用于开发验证和用户二次设计，网页运行不需要安装它。
+
+安装 FreeCAD 后，可生成验证样本，并使用能导入 `FreeCAD` Python 模块的解释器运行：
+
+```bash
+node --import tsx scripts/generate-step-fixtures.ts
+python scripts/verify-cad-step.py test-results/cad-validation/expected.json
+python scripts/verify-freecad.py test-results/cad-validation
+```
+
+开发约定见 [AGENTS.md](AGENTS.md)，第三方 CAD 内核来源与许可见 [第三方说明](public/third-party/README.txt)。

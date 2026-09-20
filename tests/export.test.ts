@@ -3,57 +3,46 @@ import assert from 'node:assert/strict'
 import Module from 'manifold-3d'
 import JSZip from 'jszip'
 import { buildModel } from '../src/geometry'
-import { createExportFile, serializeSTL } from '../src/export'
+import { createExportFile, layoutPrintPlate, serializeSTL } from '../src/export'
+import { initCAD } from '../src/cad'
+import type { CadRecipe } from '../src/cad-types'
 import { parseDesignFile } from '../src/design'
 import { DEFAULT_PARAMS, partOverrideKey } from '../src/types'
-import type { Vec3 } from '../src/types'
+import { close, readCAD } from './cad-reader'
 
 const module = await Module()
 module.setup()
-
-/** Inspect actual exported placements without testing the STEP encoder again. */
-function solidBounds(text: string): { id: string; min: Vec3; max: Vec3 }[] {
-  const entities = new Map([...text.matchAll(/^#(\d+)=(.+);$/gm)].map(match => [Number(match[1]), match[2]]))
-  const references = (body: string) => [...body.matchAll(/#(\d+)/g)].map(match => Number(match[1]))
-  return [...entities.values()].filter(body => body.startsWith('FACETED_BREP(')).map(body => {
-    const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity]
-    const shell = entities.get(references(body)[0])!
-    for (const faceId of references(shell)) {
-      const bound = entities.get(references(entities.get(faceId)!)[0])!
-      const loop = entities.get(references(bound)[0])!
-      for (const pointId of references(loop)) {
-        const point = entities.get(pointId)!
-        const coordinates = /,\(([^()]+)\)\)$/.exec(point)![1].split(',').map(Number)
-        coordinates.forEach((value, axis) => { min[axis] = Math.min(min[axis], value); max[axis] = Math.max(max[axis], value) })
-      }
-    }
-    return { id: /^FACETED_BREP\('([^']+)'/.exec(body)![1], min, max }
-  })
-}
+await initCAD()
 
 test('default download is one STEP with independent, nonoverlapping parts on Z=0', async context => {
   const fetch = context.mock.method(globalThis, 'fetch', async () => { throw new Error('Export must stay offline') })
-  // Tiny but valid fillets previously collapsed when plate translation rounded
-  // coordinates back into Float32. Read emitted STEP REAL coordinates as doubles.
+  // True CAD fillets must survive placement without being re-quantized to preview meshes.
   for (const radius of [DEFAULT_PARAMS.radius, 0.001, 0.0002]) {
     const model = buildModel(module, { ...DEFAULT_PARAMS, radius })
     const sourcePositions = model.parts.map(part => new Float32Array(part.positions))
     const file = await createExportFile(model)
     assert.equal(file.filename, 'openboxhub_all_parts_flat_mm.step')
     assert.equal(file.blob.type, 'model/step')
-    const parts = solidBounds(await file.blob.text())
-    assert.deepEqual(parts.map(part => part.id), model.parts.map(part => part.id))
+    const parts = await readCAD(file.blob)
+    assert.equal(parts.length, model.parts.length)
+    const expected = layoutPrintPlate(model.parts).placements
+    const remaining = [...parts]
+    model.parts.forEach((part, index) => {
+      const match = remaining.findIndex(solid => solid.bounds.every((size, axis) => Math.abs(size - part.bounds[axis]) < 0.001)
+        && [0, 1].every(axis => Math.abs((solid.min[axis] + solid.max[axis]) / 2 - expected[index].offset[axis]) < 0.001))
+      assert.ok(match >= 0, `STEP must preserve the planned placement of ${part.id}`)
+      remaining.splice(match, 1)
+      assert.deepEqual(part.positions, sourcePositions[index], 'layout must not mutate printable source meshes')
+    })
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]
-      assert.equal(part.min[2], 0)
-      for (let axis = 0; axis < 3; axis++)
-        assert.ok(Math.abs(part.max[axis] - part.min[axis] - model.parts[i].bounds[axis]) < 0.0001)
+      close(part.min[2], 0)
+      assert.equal(part.linearTriangles, 0)
       for (let j = i + 1; j < parts.length; j++) {
         const other = parts[j]
         assert.ok(part.max[0] <= other.min[0] || other.max[0] <= part.min[0] ||
-          part.max[1] <= other.min[1] || other.max[1] <= part.min[1], `${part.id} overlaps ${other.id}`)
+          part.max[1] <= other.min[1] || other.max[1] <= part.min[1], `solid ${i} overlaps solid ${j}`)
       }
-      assert.deepEqual(model.parts[i].positions, sourcePositions[i], 'layout must not mutate printable source meshes')
     }
   }
   assert.equal(fetch.mock.callCount(), 0)
@@ -67,7 +56,9 @@ test('STEP singles and ZIP filenames agree with the manifest and preserve editab
   const single = await createExportFile(model, 'inner-1')
   assert.equal(single.filename, 'insert_01.step')
   assert.equal(single.blob.type, 'model/step')
-  assert.deepEqual(solidBounds(await single.blob.text()).map(part => part.id), ['inner-1'])
+  const singleSolids = await readCAD(single.blob)
+  assert.equal(singleSolids.length, 1)
+  singleSolids[0].bounds.forEach((size, axis) => close(size, model.parts[1].bounds[axis], 0.001))
   const file = await createExportFile(model, 'kit', 'step')
   assert.match(file.filename, /_step_mm\.zip$/)
   const zip = await JSZip.loadAsync(await file.blob.arrayBuffer())
@@ -80,7 +71,10 @@ test('STEP singles and ZIP filenames agree with the manifest and preserve editab
     ['outer_box.step', 'insert_01.step', 'insert_02.step', 'insert_03.step', 'insert_04.step', 'inset_lid.step'])
   for (const part of manifest.parts) {
     const document = await zip.file(part.file)!.async('text')
-    assert.deepEqual(solidBounds(document).map(solid => solid.id), [part.id])
+    const solids = await readCAD(document)
+    assert.equal(solids.length, 1)
+    assert.equal(solids[0].linearTriangles, 0)
+    solids[0].bounds.forEach((size, axis) => close(size, part.bounds[axis], 0.001))
   }
   for (const source of [manifestText, await zip.file('design.json')!.async('text')]) {
     const config = parseDesignFile(source)
@@ -115,6 +109,49 @@ test('explicit STL retains binary compatibility offline and rejects invalid expo
   }
   await assert.rejects(createExportFile(model, 'missing', 'step'), /重新选择/)
   await assert.rejects(createExportFile(model, 'missing', 'stl'), /重新选择/)
-  await assert.rejects(createExportFile(model, 'outer', 'obj' as 'step'), /STEP 或 STL/)
+  await assert.rejects(createExportFile(model, 'outer', 'obj' as 'step'), /导出格式|STEP|STL/)
+  assert.equal(fetch.mock.callCount(), 0)
+})
+
+test('FreeCAD downloads package independent construction recipes and correct print placements offline', async context => {
+  const fetch = context.mock.method(globalThis, 'fetch', async () => { throw new Error('Export must stay offline') })
+  const model = buildModel(module, { ...DEFAULT_PARAMS, lidType: 'inset' }, [[0, 1, 3], [2], [4], [5]])
+  const recipe = (macro: string): CadRecipe => {
+    const encoded = macro.match(/^_openboxhub_recipe = json\.loads\((.*)\)$/m)
+    assert.ok(encoded, 'macro must carry its construction recipe as escaped data')
+    return JSON.parse(JSON.parse(encoded[1]))
+  }
+  const plate = await createExportFile(model, 'plate', 'freecad')
+  assert.equal(plate.filename, 'openboxhub_all_parts_flat_mm.FCMacro')
+  const flat = recipe(await plate.blob.text())
+  assert.deepEqual(flat.parts.map(part => ({ id: part.id, offset: part.offset })), layoutPrintPlate(model.parts).placements)
+  flat.parts.forEach((part, index) => {
+    assert.deepEqual(part.dimensions, model.parts[index].dimensions)
+    assert.equal(part.operations[0].kind, 'add')
+    assert.ok(part.operations.length >= 2)
+    part.operations.forEach(operation => assert.match(operation.profileBrep, /CASCADE Topology/))
+  })
+  const single = await createExportFile(model, 'inner-1', 'freecad')
+  assert.equal(single.filename, 'insert_01.FCMacro')
+  const singleRecipe = recipe(await single.blob.text())
+  assert.equal(singleRecipe.parts.length, 1)
+  assert.equal(singleRecipe.parts[0].id, 'inner-1')
+  assert.deepEqual(singleRecipe.parts[0].offset, [0, 0, 0])
+  const kit = await createExportFile(model, 'kit', 'freecad')
+  assert.match(kit.filename, /_freecad_mm\.zip$/)
+  const zip = await JSZip.loadAsync(await kit.blob.arrayBuffer())
+  const manifest = JSON.parse(await zip.file('manifest.json')!.async('text'))
+  assert.equal(Object.keys(zip.files).filter(name => name.endsWith('.FCMacro')).length, model.parts.length + 1)
+  for (const part of manifest.parts) {
+    assert.ok(part.file.endsWith('.FCMacro'))
+    const standalone = recipe(await zip.file(part.file)!.async('text'))
+    assert.equal(standalone.parts.length, 1)
+    assert.equal(standalone.parts[0].id, part.id)
+    assert.deepEqual(standalone.parts[0].offset, [0, 0, 0])
+  }
+  assert.deepEqual(recipe(await zip.file(plate.filename)!.async('text')).parts.map(part => part.offset), flat.parts.map(part => part.offset))
+  assert.deepEqual(parseDesignFile(await zip.file('design.json')!.async('text')),
+    { params: model.params, groups: model.groups, overrides: model.overrides, locked: false })
+  await assert.rejects(createExportFile(model, 'missing', 'freecad'), /重新选择/)
   assert.equal(fetch.mock.callCount(), 0)
 })

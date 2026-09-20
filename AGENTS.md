@@ -2,7 +2,7 @@
 
 ## 项目目标
 
-OpenBoxHub 是纯前端参数化收纳盒设计工具，仓库为 `geekheart/OpenBoxHub`，在线地址为 `https://geekheart.github.io/OpenBoxHub/`。用户在浏览器内配置外盒、整数网格与合并内盒、底板和盒盖，独立编辑零件，查看装配，再下载 STEP/STL/ZIP；通过 JSON 文件保存与恢复设计。
+OpenBoxHub 是纯前端参数化收纳盒设计工具，仓库为 `geekheart/OpenBoxHub`，在线地址为 `https://geekheart.github.io/OpenBoxHub/`。用户在浏览器内配置外盒、整数网格与合并内盒、底板和盒盖，独立编辑零件，查看装配，再下载解析 STEP、FreeCAD 宏、STL/ZIP；通过 JSON 文件保存与恢复设计。
 
 请优先保持几何正确性、参数含义与可打印的导出结果。界面以中文为主，尺寸统一为毫米。不得把网格检查、切片软件读取或效果图描述为实物打印验证。
 
@@ -39,7 +39,9 @@ pnpm preview --port 4173
 | `src/NumberField.tsx` | 数值输入与暂存编辑值 |
 | `src/Scene.tsx` | Three.js 渲染、相机、组件选择、显隐与装配动画 |
 | `src/design.ts` | 纯前端参数 JSON 格式、结构校验、导入与导出 |
-| `src/step.ts` | `serializeSTEP`：从打印网格生成 AP214 分面实体 STEP |
+| `src/cad.ts` / `src/cad-types.ts` | 从参数重建 OpenCascade 解析实体与可移植轮廓、拉伸、切除步骤 |
+| `src/step.ts` | 从设计生成 CAD STEP；不得转换预览三角网格 |
+| `src/freecad.ts` | 生成原生 FreeCAD 草图、Pad/Pocket、参数表达式的建模宏 |
 | `src/export.ts` | 导出格式与目标、二进制 STL、平铺排布、ZIP、参数和装配清单 |
 | `src/export.worker.ts` | 在独立线程生成下载文件，切换格式、目标或关闭窗口时终止旧任务 |
 | `src/styles.css` | 工作台、全屏、弹窗与响应式布局 |
@@ -48,10 +50,10 @@ pnpm preview --port 4173
 
 ## 纯前端边界
 
-- 参数建模、预览、STEP/STL 序列化和 ZIP 生成都必须在浏览器中完成。
+- 参数建模、预览、解析 CAD、STEP/STL 序列化、FreeCAD 宏和 ZIP 生成都必须在浏览器中完成。
 - 不引入保存 API、业务后端、数据库、模型上传或服务端文件写入。Vite 仅是开发服务器，线上仅需静态文件。
 - 不使用 `localStorage`、`sessionStorage` 或 IndexedDB 保存设计、历史记录和草稿；刷新页面恢复默认设计。用户通过显式下载和导入 JSON 保留设计。
-- Manifold WASM 使用 Vite 资源导入，Worker 使用模块 URL；保持根目录与仓库子目录部署可用。不要硬编码 `/assets/` 等站点根路径。
+- Manifold 与 OpenCascade WASM 使用 Vite 资源导入，Worker 使用模块 URL；保持根目录与仓库子目录部署可用。不要硬编码 `/assets/` 等站点根路径。
 - 通过 `Blob` 和带 `download` 属性的链接触发浏览器下载，及时释放对象 URL。异步导出应检查模型、格式和目标是否仍匹配，不能下载过期模型或先前选择的文件格式。
 - 保留 Worker 请求序号检查，忽略过时结果；参数修改不能被先前的异步计算覆盖。模型无效或正在更新时，不应允许导出旧状态。
 - 模型生成失败时可保留上一个有效预览，但要明确显示错误与旧模型状态。
@@ -93,13 +95,16 @@ Manifold、CrossSection 及运算产生的临时结果通常持有 WASM 句柄�
 - `PartData.positions` 是不可被场景修改的标准打印网格：毫米、XY 居中、最小 Z 为 0。
 - 外盒和内盒开口向上；盒盖顶板向下、定位裙边向上，便于独立打印。
 - `assemblyPosition` / `assemblyRotation` 仅描述装配，爆炸、开盖、透明、相机与显隐仅属于展示状态。
-- 右上角组件栏使用清楚的「隐藏盒盖 / 显示盒盖」文字按钮；隐藏盒盖不影响建模参数或导出零件。相机取景应排除隐藏零件，避免不可见盒盖拉远视图。
-- STEP 与 STL 只能序列化标准打印网格，不能直接从 Three.js 场景或当前动画姿态抓取数据。
-- 默认格式为 STEP、目标为整套平铺单文件；保留 STL 选择。两种格式均支持整套单文件、独立零件 ZIP 和单个零件。
+- 右上角组件栏文字固定为「盒盖」，与外盒、内盒一致；通过眼睛图标与 aria-pressed 表示显隐，title/aria-label 保留操作描述；隐藏盒盖不影响建模参数或导出零件。相机取景应排除隐藏零件，避免不可见盒盖拉远视图。
+- STL 使用标准打印网格；STEP 与 FreeCAD 宏必须从设计参数的解析 CAD 轮廓重建，禁止三角面转换。三者均不能从 Three.js 场景或当前动画姿态抓取数据。
+- 默认格式为 STEP、目标为整套平铺单文件；保留 STL 和 FreeCAD 宏选择。三种格式均支持整套单文件、独立零件 ZIP 和单个零件。
 - 平铺文件可应用自己的排布平移，但每个零件必须位于 Z=0 且彼此分离；整套 STEP 保持多个独立实体。该通用排布不承诺适合特定热床。
-- STEP 平铺平移使用双精度坐标，避免二次 Float32 量化压扁极小圆角的短边。
-- STEP 使用闭合网格生成 AP214 `FACETED_BREP` 分面实体，显式记录毫米单位，并保留闭合壳与面方向。它不恢复解析圆曲面、草图或参数化特征；继续设计应使用 JSON。实体类型参考 [OCCT STEP 文档](https://github.com/Open-Cascade-SAS/OCCT/blob/master/dox/user_guides/step/step.md)。
-- ZIP 中的零件文件扩展名、内容与清单应符合所选 STEP/STL 格式，保持每个零件独立，并包含毫米单位、参数、分组、独立设置、装配变换和打印说明。STEP/STL 均不保存打印配置；STL 本身不保存单位。
+- STEP 使用 OpenCascade 原生 BRep，从参数轮廓、拉伸、布尔运算生成连续平面/圆柱面等解析曲面；独立非等比缩放可产生椭圆或样条。保留毫米单位和每个零件的独立实体，不能把 `FACETED_BREP` 网格包装当成解析 CAD。
+- 内盒 CAD 轮廓从整数网格直接构造：内缩外接矩形，减去缺格的圆角扩张，再与留出间隙的圆角内腔求交。侵蚀对交集可分配，这也能处理缺格仅在顶点接触的初始自接触边界。平面布尔使用 OCCT 原生 Common/Cut，壁厚偏移使用完整有向面的 BRepOffsetAPI_MakeOffset；Replicad 1.1.0 的二维布尔与偏移会漏闭环、错判裁切圆弧方向或缩小孔洞，不能直接替换回来。保留大圆角、12 × 12 四角、双孔合并与顶点相接缺格的实体尺寸、体积回归；导出前校验 Z=0 及完整设计高度，防止有效实体退化成仅有底板。
+- FreeCAD 宏消费同一 CAD 建模步骤，解析 BRep 轮廓转为原生 Sketcher 几何，创建 PartDesign Body/Pad/Pocket。使用 Body 外的 App::VarSet 参数集及原生表达式，避免循环依赖；保存 FCStd 后重开仍能重算，不依赖外置 Python 插件。宏只新建文档，不覆盖已有工程。
+- STEP 本身不保留原生特征历史。宏保留轮廓、拉伸、挖腔与镂空步骤，不宣称恢复网页端格子合并操作历史。页面明确区分 STEP、FreeCAD 宏与可重新导入的 JSON。
+- 解析 CAD 内核只在导出 STEP/FreeCAD 时加载，仍在 Worker 内执行。释放 OCCT 句柄，并保留关闭/切换时终止 Worker 和过期结果防护；不可因 STEP 首次加载体积较大而改用服务端。
+- ZIP 文件扩展名、内容与清单应符合所选格式，保持零件独立，并包含参数 JSON、毫米单位与打印方向。展示隐藏不影响导出。第三方 CAD 内核的许可与来源随静态资源发布。
 
 ### 装配动画与路径检查
 
@@ -119,7 +124,7 @@ Manifold、CrossSection 及运算产生的临时结果通常持有 WASM 句柄�
 - 极限尺寸、小圆角、薄壁与多行列组合。
 - 外盒、所有内盒和盒盖之间没有实体体积重叠。
 - 合并真正减少隔墙，镂空是真实贯通孔，导出不受展示姿态影响。
-- 文件完整、STL 面数与字节数一致、STEP 实体闭合且单位与尺寸正确、ZIP 内零件数及格式与清单一致。新增或修改 STEP 序列化后，用独立 CAD 读取器检查实体数量、有效性、尺寸与体积，不能只检查文本实体名称。
+- 文件完整、STL 面数与字节数一致、STEP 实体闭合且单位与尺寸正确、ZIP 内零件数及格式与清单一致。新增或修改 CAD 导出后，用独立 FreeCAD 读取器检查实体数量、有效性、尺寸、体积与曲面类型，检查平面可继续挤出/切除，不能只检查文本实体名称。FreeCAD 宏还需实际执行、修改参数重算、保存 FCStd 并重开验证。
 - 参数 JSON 与装配清单导入后的几何一致；独立设置、锁定状态与分组可往返；无效格式、数值、分组、尺寸及装配不得替换当前设计。
 - 单独修改一个零件不影响无关零件；合并/拆分后未变分组保留独立设置；非矩形尺寸修改保留轮廓和壁厚。
 - 运动路径覆盖默认等分、L 形、回形、多重嵌套、U/C 形开口凹槽、不同盖型及独立高度；验证普通等分同层、同中心凹槽内盒及受阻内盒分层后完整展开，并检查连续扫掠结果、阶段边界、模式切换和反向移动。
@@ -131,7 +136,7 @@ Manifold、CrossSection 及运算产生的临时结果通常持有 WASM 句柄�
 ## 文档与截图
 
 - `README.md` 是项目介绍与使用部署入口；`AGENTS.md` 是维护规则；`agent.md` 仅指向本文件，避免维护两套规则。
-- README 截图放在 `docs/images/`，使用实际运行页面：`overview.png`、`layout-merge.png`、`perforation.png`、`exploded.png`、`layered-exploded.png`、`export.png`、`part-editor.png`、`parameter-file.png`。`layered-exploded.png` 展示回形与中心内盒分层展开，并隐藏盒盖。
+- README 截图放在 `docs/images/`，使用实际运行页面：`overview.png`、`layout-merge.png`、`perforation.png`、`exploded.png`、`layered-exploded.png`、`export.png`、`part-editor.png`、`parameter-file.png`、`freecad.png`。`layered-exploded.png` 展示回形与中心内盒分层展开，并隐藏盒盖；`freecad.png` 为实际 FreeCAD 原生工程视图，示例工程在 `examples/default_3x2/OpenBoxHub.FCStd`。
 - 截图前等待建模与渲染完成；展示清楚的功能状态，避免错误提示、未加载画布、开发工具或私密信息。界面发生明显变化时更新相关截图及替代文本。
 - README 中的功能、测试数量和部署步骤必须与代码一致，不使用虚构的许可证、Stars 或通过状态徽章。
 - 产品界面和 README 不再展示参考模型。原始 `.3mf` 保留本地，不作为构建、在线运行或公开仓库的必要资源；不要覆盖原件。历史测量与推断记录保留在 `docs/reference-analysis.md`，区分原模型事实与新增设计。

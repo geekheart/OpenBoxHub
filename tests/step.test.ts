@@ -1,200 +1,190 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import Module from 'manifold-3d';
-import { buildModel } from '../src/geometry';
-import { serializeSTEP } from '../src/step';
-import { DEFAULT_PARAMS } from '../src/types';
-import type { PartData } from '../src/types';
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import Module from 'manifold-3d'
+import { getOC, iterTopo, measureVolume } from 'replicad'
+import { buildModel } from '../src/geometry'
+import { buildCAD, exportCADSTEP, initCAD } from '../src/cad'
+import { serializeSTEP } from '../src/step'
+import { DEFAULT_PARAMS, partOverrideKey } from '../src/types'
+import type { ModelData, Params, Vec3 } from '../src/types'
+import { close, readCAD } from './cad-reader'
 
-const module = await Module();
-module.setup();
-type Mesh = Pick<PartData, 'id' | 'positions' | 'indices'>;
-type Point = [number, number, number];
-const removeStrings = (value: string) => value.replace(/'(?:[^']|'')*'/g, "''");
-const refs = (value: string) => [...removeStrings(value).matchAll(/#(\d+)/g)].map(match => Number(match[1]));
-const dot = (a: Point, b: Point) => a.reduce((sum, value, axis) => sum + value * b[axis], 0);
-const subtract = (a: Point, b: Point): Point => a.map((value, axis) => value - b[axis]) as Point;
-const cross = (a: Point, b: Point): Point => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const module = await Module()
+module.setup()
+await initCAD()
 
-/** Independently traverse emitted STEP topology, including the planar face frames. */
-function readFacets(text: string): { entities: Map<number, string>; meshes: Mesh[] } {
-  assert.ok(text.startsWith('ISO-10303-21;\nHEADER;\n'));
-  assert.ok(text.endsWith('ENDSEC;\nEND-ISO-10303-21;\n'));
-  assert.match(text, /FILE_SCHEMA\(\('AUTOMOTIVE_DESIGN'\)\);/);
-  const data = text.split('\nDATA;\n')[1].split('\nENDSEC;')[0];
-  const entities = new Map<number, string>();
-  for (const line of data.split('\n')) {
-    const match = /^#(\d+)=(.+);$/.exec(line);
-    assert.ok(match, `invalid STEP entity: ${line}`);
-    const id = Number(match[1]);
-    assert.ok(!entities.has(id), 'STEP entity identifiers must be unique');
-    entities.set(id, match[2]);
+const roundedArea = (width: number, depth: number, radius: number) => width * depth - (4 - Math.PI) * radius * radius
+const outerVolume = (p: Params) => roundedArea(p.width, p.depth, p.radius) * p.height -
+  roundedArea(p.width - 2 * p.wall, p.depth - 2 * p.wall, Math.max(0, p.radius - p.wall)) * (p.height - p.bottom)
+
+async function checkModel(model: ModelData): Promise<void> {
+  const stats = await readCAD(await serializeSTEP(model))
+  assert.equal(stats.length, model.parts.length)
+  const remaining = [...stats]
+  for (const part of model.parts) {
+    const index = remaining.findIndex(solid => solid.bounds.every((size, axis) => Math.abs(size - part.bounds[axis]) < 0.001)
+      && Math.abs(solid.volume - part.volume) < Math.max(0.02, part.volume * 0.005))
+    assert.ok(index >= 0, `no analytic CAD solid matches ${part.id}'s dimensions and material volume`)
+    const [solid] = remaining.splice(index, 1)
+    close(solid.min[2], 0)
+    close(solid.min[0] + solid.max[0], 0)
+    close(solid.min[1] + solid.max[1], 0)
+    assert.equal(solid.linearTriangles, 0, `${part.id} must not contain a triangle mesh disguised as planar CAD faces`)
+    assert.ok(solid.faces < part.indices.length / 3, `${part.id} should have CAD faces rather than one face per mesh triangle`)
   }
-  for (const body of entities.values()) for (const ref of refs(body)) assert.ok(entities.has(ref), `unresolved entity #${ref}`);
-  const get = (id: number, kind: string): string => {
-    const body = entities.get(id)!;
-    assert.ok(body.startsWith(`${kind}(`), `#${id} must be ${kind}`);
-    return body;
-  };
-  const tuple = (id: number, kind: 'CARTESIAN_POINT' | 'DIRECTION'): Point => {
-    const body = get(id, kind), match = /,\(([^()]+)\)\)$/.exec(body);
-    assert.ok(match);
-    const values = match[1].split(',');
-    assert.equal(values.length, 3);
-    values.forEach(value => assert.match(value, /^[+-]?\d+\.\d*(?:E[+-]?\d+)?$/, 'coordinates and directions must use STEP REAL syntax'));
-    const point = values.map(Number) as Point;
-    assert.ok(point.every(Number.isFinite));
-    return point;
-  };
-  const meshes: Mesh[] = [];
-  const representations = [...entities.values()].filter(body => body.startsWith('FACETED_BREP_SHAPE_REPRESENTATION('));
-  for (const [id, body] of entities) {
-    if (!body.startsWith('FACETED_BREP(')) continue;
-    assert.equal(representations.filter(rep => refs(rep).includes(id)).length, 1, 'each solid must have an independently referenced shape representation');
-    const shell = get(refs(body)[0], 'CLOSED_SHELL');
-    const vertices = new Map<number, number>(), coordinates: number[] = [], indices: number[] = [];
-    for (const faceId of refs(shell)) {
-      const face = get(faceId, 'FACE_SURFACE');
-      assert.match(face, /,\.T\.\)$/);
-      const [boundId, planeId] = refs(face);
-      const bound = get(boundId, 'FACE_OUTER_BOUND');
-      assert.match(bound, /,\.T\.\)$/);
-      const loop = get(refs(bound)[0], 'POLY_LOOP');
-      const triangle = refs(loop);
-      assert.equal(triangle.length, 3);
-      const points = triangle.map(vertex => tuple(vertex, 'CARTESIAN_POINT'));
-      const frame = get(refs(get(planeId, 'PLANE'))[0], 'AXIS2_PLACEMENT_3D');
-      const [anchorId, normalId, referenceId] = refs(frame);
-      const anchor = tuple(anchorId, 'CARTESIAN_POINT'), normal = tuple(normalId, 'DIRECTION'), reference = tuple(referenceId, 'DIRECTION');
-      assert.ok(Math.abs(Math.hypot(...normal) - 1) < 1e-10);
-      assert.ok(Math.abs(Math.hypot(...reference) - 1) < 1e-10);
-      assert.ok(Math.abs(dot(normal, reference)) < 1e-10);
-      points.forEach(point => assert.ok(Math.abs(dot(subtract(point, anchor), normal)) < 1e-8, 'every loop point must lie on its face plane'));
-      assert.ok(dot(cross(subtract(points[1], points[0]), subtract(points[2], points[0])), normal) > 0,
-        'the face plane and polygon winding must have the same outward sense');
-      triangle.forEach((vertex, corner) => {
-        if (!vertices.has(vertex)) { vertices.set(vertex, vertices.size); coordinates.push(...points[corner]); }
-        indices.push(vertices.get(vertex)!);
-      });
-    }
-    const label = /^FACETED_BREP\('((?:[^']|'')*)',/.exec(body)![1].replace(/''/g, "'");
-    meshes.push({ id: label, positions: new Float32Array(coordinates), indices: new Uint32Array(indices) });
-  }
-  assert.equal(meshes.length, representations.length);
-  assert.equal([...entities.values()].filter(body => body.startsWith('PRODUCT(')).length, meshes.length);
-  assert.equal([...entities.values()].filter(body => body.startsWith('SHAPE_DEFINITION_REPRESENTATION(')).length, meshes.length);
-  return { entities, meshes };
 }
 
-function tetrahedron(id = 'tetrahedron'): Mesh {
-  return { id, positions: new Float32Array([0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4]),
-    indices: new Uint32Array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]) };
-}
-
-test('STEP independently represents all parts as correctly oriented planar solids in millimeters', () => {
-  const model = buildModel(module, DEFAULT_PARAMS);
-  const result = readFacets(serializeSTEP(model.parts));
-  assert.equal(result.meshes.length, model.parts.length);
-  assert.ok([...result.entities.values()].some(body => body === '(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))'));
-  assert.ok(![...result.entities.values()].some(body => /^(OPEN_SHELL|ADVANCED_FACE|B_SPLINE_SURFACE|TESSELLATED_)/.test(body)));
-  result.meshes.forEach((mesh, index) => {
-    const expected = model.parts[index];
-    assert.equal(mesh.id, expected.id);
-    const solid = new module.Manifold(new module.Mesh({ numProp: 3, vertProperties: mesh.positions, triVerts: mesh.indices }));
-    try {
-      assert.equal(solid.status(), 'NoError');
-      assert.ok(Math.abs(solid.volume() - expected.volume) < Math.max(0.0001, expected.volume * 1e-7));
-      const bounds = solid.boundingBox();
-      expected.bounds.forEach((size, axis) => assert.ok(Math.abs(bounds.max[axis] - bounds.min[axis] - size) < 0.0001));
-      assert.equal(bounds.min[2], 0);
-    } finally { solid.delete(); }
-  });
-});
-
-test('merged L and ring outlines and perforation holes survive STEP face topology', () => {
-  const models = [
-    buildModel(module, DEFAULT_PARAMS, [[0, 1, 3], [2], [4], [5]]),
-    buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, [[0, 1, 2, 3, 5, 6, 7, 8], [4]]),
-    buildModel(module, { ...DEFAULT_PARAMS, baseStyle: 'honeycomb' }),
-  ];
-  for (const model of models) {
-    const source = model.parts.filter(part => part.kind === 'inner' && part.cellIds!.length > 1 || part.kind === 'outer' && model.params.baseStyle !== 'solid');
-    const restored = readFacets(serializeSTEP(source)).meshes;
-    restored.forEach((mesh, index) => {
-      const original = new module.Manifold(new module.Mesh({ numProp: 3, vertProperties: source[index].positions, triVerts: source[index].indices }));
-      const roundtrip = new module.Manifold(new module.Mesh({ numProp: 3, vertProperties: mesh.positions, triVerts: mesh.indices }));
+/** Check the actual CAD bodies against an independent Manifold material reference. */
+function checkBuiltCAD(model: ModelData, exactBounds = new Map<string, Vec3>()) {
+  const cad = buildCAD(model)
+  const stats = new Map<string, { bounds: Vec3; volume: number }>()
+  try {
+    assert.equal(cad.parts.length, model.parts.length)
+    for (const expected of model.parts) {
+      const part = cad.parts.find(candidate => candidate.id === expected.id)
+      assert.ok(part, `missing CAD part ${expected.id}`)
+      const check = new (getOC()).BRepCheck_Analyzer(part.shape.wrapped, true)
+      const solids = part.shape.solids
+      const shells = [...iterTopo(part.shape.wrapped, 'shell')]
+      const box = part.shape.boundingBox
       try {
-        assert.equal(roundtrip.status(), 'NoError');
-        assert.equal(roundtrip.genus(), original.genus());
-        assert.ok(Math.abs(roundtrip.volume() - original.volume()) < 0.0001);
-      } finally { original.delete(); roundtrip.delete(); }
-    });
+        assert.equal(solids.length, 1, `${expected.id} must be one solid`)
+        assert.ok(check.IsValid(), `${expected.id} must be geometrically valid`)
+        assert.ok(shells.length > 0 && shells.every(shell => getOC().BRep_Tool.IsClosed(shell)), `${expected.id} must be closed`)
+        const [min, max] = box.bounds
+        const bounds = max.map((value, axis) => value - min[axis]) as Vec3
+        // A valid thin plate is insufficient: all walls must reach the requested height.
+        assert.ok(Math.abs(bounds[2] - expected.dimensions.height) <= 0.0001,
+          `${expected.id}: expected full height ${expected.dimensions.height}, read ${bounds[2]}`)
+        close(min[2], 0)
+        close(min[0] + max[0], 0)
+        close(min[1] + max[1], 0)
+        const reference = exactBounds.get(expected.id) ?? expected.bounds
+        const xyTolerance = exactBounds.has(expected.id) ? 0.0001 : 0.001
+        close(bounds[0], reference[0], xyTolerance)
+        close(bounds[1], reference[1], xyTolerance)
+        const volume = measureVolume(part.shape)
+        assert.ok(Math.abs(volume - expected.volume) <= Math.max(0.02, expected.volume * 0.005),
+          `${expected.id}: CAD material volume ${volume} differs from independent preview ${expected.volume}`)
+        stats.set(expected.id, { bounds, volume })
+      } finally {
+        box.delete(); shells.forEach(shell => shell.delete()); solids.forEach(solid => solid.delete()); check.delete()
+      }
+    }
+    return stats
+  } finally { cad.dispose() }
+}
+
+/** Exact circle/rectangle intersection for a single corner cell, then its gap inset. */
+function cornerCellBounds(p: Params): Vec3 {
+  const width = p.width - 2 * p.wall, depth = p.depth - 2 * p.wall
+  const left = -width / 2 + p.gap, right = -width / 2 + width / p.cols - p.gap
+  const bottom = depth / 2 - depth / p.rows + p.gap, top = depth / 2 - p.gap
+  const cx = -p.width / 2 + p.radius, cy = p.depth / 2 - p.radius
+  const radius = p.radius - p.wall - p.gap
+  // Erosion distributes over the intersection: inset the circle and cell edges.
+  const minX = Math.max(left, cx - Math.sqrt(radius ** 2 - Math.max(0, bottom - cy) ** 2))
+  const maxY = Math.min(top, cy + Math.sqrt(radius ** 2 - Math.max(0, cx - right) ** 2))
+  return [right - minX, maxY - bottom, p.height - p.bottom - p.lidDepth - p.lidClearance]
+}
+
+function checkSymmetricParts(stats: ReturnType<typeof checkBuiltCAD>, ids: string[]): void {
+  const first = stats.get(ids[0])!
+  for (const id of ids.slice(1)) {
+    const part = stats.get(id)!
+    part.bounds.forEach((size, axis) => close(size, first.bounds[axis], 0.0001))
+    close(part.volume, first.volume, 0.001)
   }
-});
+}
 
-test('STEP uses only supplied print coordinates, preserves plate translations and never mutates the mesh', () => {
-  const model = buildModel(module, DEFAULT_PARAMS);
-  const part = model.parts.at(-1)!;
-  const before = new Float32Array(part.positions), beforeIndices = new Uint32Array(part.indices);
-  const first = serializeSTEP([part]).split('\nDATA;\n')[1];
-  const movedDisplay = { ...part, assemblyPosition: [1000, -500, 900] as [number, number, number], assemblyRotation: [2, 1, 0] as [number, number, number] };
-  assert.equal(serializeSTEP([movedDisplay]).split('\nDATA;\n')[1], first);
-  const translated = { ...part, positions: part.positions.map((value, index) => value + [300, 200, 0][index % 3]) };
-  const restored = readFacets(serializeSTEP([translated])).meshes[0];
-  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  restored.positions.forEach((value, index) => { min[index % 3] = Math.min(min[index % 3], value); max[index % 3] = Math.max(max[index % 3], value); });
-  assert.ok(Math.abs((min[0] + max[0]) / 2 - 300) < 0.0001);
-  assert.ok(Math.abs((min[1] + max[1]) / 2 - 200) < 0.0001);
-  assert.equal(min[2], 0);
-  assert.deepEqual(part.positions, before); assert.deepEqual(part.indices, beforeIndices);
-});
+test('STEP rebuilds smooth analytic solids with cylindrical corners and exact parametric outer volume', async () => {
+  const model = buildModel(module, DEFAULT_PARAMS)
+  const text = await serializeSTEP(model, 'default.step')
+  assert.doesNotMatch(text, /FACETED_BREP|TESSELLATED_FACE_SET/)
+  const solids = await readCAD(text)
+  assert.equal(solids.length, 8)
+  const outer = solids.find(solid => Math.abs(solid.bounds[0] - model.params.width) < 0.0001 &&
+    Math.abs(solid.bounds[1] - model.params.depth) < 0.0001 && Math.abs(solid.bounds[2] - model.params.height) < 0.0001)!
+  assert.ok(outer)
+  assert.ok((outer.surfaces.CYLINDRE ?? 0) >= 8, 'both external and cavity corners must remain analytic cylinders')
+  assert.ok(outer.faces <= 24, 'ordinary outer shell must use a small set of full CAD faces')
+  close(outer.volume, outerVolume(model.params), 0.0001)
+  assert.ok(solids.every(solid => solid.linearTriangles === 0))
+})
 
-test('STEP welds coincident coordinates before checking edge topology', () => {
-  const source = tetrahedron();
-  const duplicated = { id: source.id, positions: new Float32Array([...source.indices].flatMap(index => [...source.positions.slice(index * 3, index * 3 + 3)])),
-    indices: Uint32Array.from({ length: source.indices.length }, (_, index) => index) };
-  const result = readFacets(serializeSTEP([duplicated]));
-  assert.equal(result.meshes[0].positions.length, 12);
-  assert.equal(result.meshes[0].indices.length, source.indices.length);
-});
+test('all lid styles and merged L, U and ring contours survive CAD STEP roundtrips', async () => {
+  for (const lidType of ['none', 'sleeve', 'inset'] as const) await checkModel(buildModel(module, { ...DEFAULT_PARAMS, lidType }))
+  await checkModel(buildModel(module, DEFAULT_PARAMS, [[0, 1, 3], [2], [4], [5]]))
+  await checkModel(buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, [[0, 2, 3, 5, 6, 7, 8], [1], [4]]))
+  await checkModel(buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, [[0, 1, 2, 3, 5, 6, 7, 8], [4]]))
+})
 
-test('STEP rejects damaged, open, reversed, disconnected or non-finite source meshes', () => {
-  const source = tetrahedron();
-  assert.throws(() => serializeSTEP([]), /至少选择/);
-  assert.throws(() => serializeSTEP([source, source]), /标识必须唯一/);
-  assert.throws(() => serializeSTEP([{ ...source, id: '' }]), /标识必须唯一/);
-  assert.throws(() => serializeSTEP([{ ...source, positions: new Float32Array([0, 0]) }]), /数据不完整/);
-  assert.throws(() => serializeSTEP([{ ...source, positions: source.positions.map((value, index) => index === 0 ? Infinity : value) }]), /有限数字/);
-  assert.throws(() => serializeSTEP([{ ...source, indices: new Uint32Array([...source.indices, 0]) }]), /数据不完整/);
-  assert.throws(() => serializeSTEP([{ ...source, indices: source.indices.map((value, index) => index === 0 ? 99 : value) }]), /索引超出/);
-  const invalidIndex = [...source.indices]; invalidIndex[0] = 0.5;
-  assert.throws(() => serializeSTEP([{ ...source, indices: invalidIndex as unknown as Uint32Array }]), /索引超出/);
-  assert.throws(() => serializeSTEP([{ ...source, indices: new Uint32Array([...source.indices, 0, 1, 2]) }]), /重复三角面/);
-  const collapsed = new Float32Array(source.positions); collapsed.set([0, 0, 0], 3);
-  assert.throws(() => serializeSTEP([{ ...source, positions: collapsed }]), /退化三角面/);
-  const flat = source.positions.map((value, index) => index % 3 === 2 ? 0 : value);
-  assert.throws(() => serializeSTEP([{ ...source, positions: flat }]), /退化三角面/);
-  const cube = buildModel(module, DEFAULT_PARAMS).parts[0];
-  assert.throws(() => serializeSTEP([{ ...cube, indices: cube.indices.slice(3) }]), /闭合且方向一致/);
-  const oneReversed = new Uint32Array(source.indices); [oneReversed[0], oneReversed[1]] = [oneReversed[1], oneReversed[0]];
-  assert.throws(() => serializeSTEP([{ ...source, indices: oneReversed }]), /闭合且方向一致/);
-  const reversed = source.indices.map((_, index) => source.indices[Math.floor(index / 3) * 3 + 2 - index % 3]);
-  assert.throws(() => serializeSTEP([{ ...source, indices: reversed }]), /体积必须为正/);
-  const disconnected = { ...source,
-    positions: new Float32Array([...source.positions, ...source.positions.map((value, index) => value + (index % 3 === 0 ? 10 : 0))]),
-    indices: new Uint32Array([...source.indices, ...source.indices.map(index => index + 4)]),
-  };
-  assert.throws(() => serializeSTEP([disconnected]), /连通的闭合壳体/);
-});
+test('all perforations are real CAD cutouts with analytic circle and slot walls', async () => {
+  for (const baseStyle of ['honeycomb', 'circles', 'grid', 'slots'] as const) {
+    const params = { ...DEFAULT_PARAMS, baseStyle }
+    const model = buildModel(module, params)
+    const cad = buildCAD(model)
+    try {
+      const outer = cad.parts.find(part => part.id === 'outer')!
+      const [solid] = await readCAD(exportCADSTEP([outer]))
+      const holeArea = baseStyle === 'circles' ? Math.PI * (params.holeSize / 2) ** 2
+        : baseStyle === 'slots' ? Math.PI * (params.holeSize / 2) ** 2 + params.holeSize * (params.slotLength - params.holeSize)
+          : baseStyle === 'honeycomb' ? Math.sqrt(3) / 2 * params.holeSize ** 2 : params.holeSize ** 2
+      close(solid.volume, outerVolume(params) - model.metrics.holeCount * holeArea * params.bottom, 0.001)
+      assert.equal(solid.linearTriangles, 0)
+      if (baseStyle === 'circles') assert.ok((solid.surfaces.CYLINDRE ?? 0) >= model.metrics.holeCount)
+      if (baseStyle === 'slots') assert.ok((solid.surfaces.CYLINDRE ?? 0) >= model.metrics.holeCount * 2)
+    } finally { cad.dispose() }
+  }
+})
 
-test('STEP safely escapes identifiers, Unicode, backslashes and file-name delimiters', () => {
-  const source = tetrahedron("box'\\盒📦\n#999=OPEN_SHELL();");
-  const output = serializeSTEP([source], "file'\nENDSEC;\\盒.step");
-  assert.match(output, /box''\\\\\\X2\\76D2\\X0\\\\X4\\0001F4E6\\X0\\/);
-  assert.match(output, /\\X2\\000A\\X0\\/);
-  assert.equal(output.split('\nENDSEC;\n').length, 3);
-  const result = readFacets(output);
-  assert.equal(result.meshes.length, 1);
-  assert.ok(![...result.entities.values()].some(body => body.startsWith('OPEN_SHELL(')));
-  assert.throws(() => serializeSTEP([source], '\ud800'), /无效的 Unicode/);
-});
+test('independent anisotropic inserts and cover dimensions remain editable analytic CAD', async () => {
+  const groups = [[0, 1, 3], [2], [4], [5]]
+  const original = buildModel(module, DEFAULT_PARAMS, groups)
+  const first = original.parts[1].dimensions
+  const custom = buildModel(module, DEFAULT_PARAMS, groups, {
+    [partOverrideKey(groups[0])]: { width: first.width * 0.85, depth: first.depth * 0.9, height: 14, wall: 1.2, bottom: 1.1 },
+    lid: { bottom: 1.8 },
+  })
+  await checkModel(custom)
+})
+
+test('near-half-depth corner radii preserve complete symmetric insert walls', () => {
+  const model = buildModel(module, { ...DEFAULT_PARAMS, radius: 69.9 })
+  const corners = ['inner-1', 'inner-3', 'inner-4', 'inner-6']
+  const stats = checkBuiltCAD(model, new Map(corners.map(id => [id, cornerCellBounds(model.params)])))
+  checkSymmetricParts(stats, corners)
+})
+
+test('the 12 by 12 maximum grid retains full-height corner boxes and all 144 insert solids', () => {
+  const model = buildModel(module, { ...DEFAULT_PARAMS, width: 250, depth: 250, rows: 12, cols: 12, radius: 30 })
+  assert.equal(model.parts.filter(part => part.kind === 'inner').length, 144)
+  const corners = ['inner-1', 'inner-12', 'inner-133', 'inner-144']
+  const stats = checkBuiltCAD(model, new Map(corners.map(id => [id, cornerCellBounds(model.params)])))
+  checkSymmetricParts(stats, corners)
+})
+
+test('a merged box with two enclosed holes preserves both surrounding walls and material volume', async () => {
+  const groups = [[0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14], [6], [8]]
+  const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 5 }, groups)
+  await checkModel(model)
+})
+
+test('excluded grid cells meeting at a vertex still produce a complete editable merged insert', async () => {
+  const params = { ...DEFAULT_PARAMS, width: 90, depth: 70, height: 30, rows: 4, cols: 4,
+    radius: 4, gap: 0.3662479864666238, innerWall: 1.3044581152498722, lidType: 'none' as const }
+  const groups = [[0, 4, 5, 6, 7, 8, 10, 11, 13, 14], [1], [2], [3], [9], [12], [15]]
+  await checkModel(buildModel(module, params, groups))
+})
+
+test('STEP is generated from design parameters rather than preview triangles or scene transforms', async () => {
+  const model = buildModel(module, DEFAULT_PARAMS)
+  const before = await readCAD(await serializeSTEP(model))
+  const tampered: ModelData = { ...model, parts: model.parts.map(part => ({ ...part,
+    positions: new Float32Array([NaN, Infinity, -999]), indices: new Uint32Array(),
+    assemblyPosition: [1000, -500, 900] as Vec3, assemblyRotation: [1, 2, 3] as Vec3,
+  })) }
+  const after = await readCAD(await serializeSTEP(tampered))
+  assert.deepEqual(after, before)
+  await assert.rejects(serializeSTEP({ ...model, params: { ...model.params, width: NaN } }), /尺寸|数字|参数/)
+})

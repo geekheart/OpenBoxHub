@@ -232,6 +232,7 @@ export default function App() {
     return () => { setTimeout(() => URL.revokeObjectURL(href), 30_000) }
   }, [modal, model, busy, error, locked])
   const readyDownload = !busy && !error && download?.model === model && download?.target === exportTarget && download?.format === exportFormat ? download : null
+  const exportLabel = exportFormat === 'freecad' ? 'FreeCAD' : exportFormat.toUpperCase()
   const readyDesignDownload = !busy && !error && designDownload?.model === model && designDownload?.locked === locked ? designDownload : null
   const chosenPart = model?.parts.find(p => p.id === selected)
   const partValues = chosenPart ? chosenPart.kind === 'outer' ? { width: params.width, depth: params.depth, height: params.height, wall: params.wall, bottom: params.bottom } : { ...chosenPart.dimensions, ...overrides[chosenPart.overrideKey ?? ''] } : null
@@ -291,7 +292,7 @@ export default function App() {
           <div className="parts-panel"><div className="parts-heading"><Layers size={13} /><span>组件</span><span>{model?.parts.length ?? '—'}</span></div>{([['outer', '外盒', '#708671'], ['inner', '内盒', '#d4dcca'], ['lid', '盒盖', '#81947a']] as const).map(([key, label, color]) => {
             const absent = key === 'lid' && params.lidType === 'none'
             const action = `${visible[key] ? '隐藏' : '显示'}${label}`
-            return <button key={key} disabled={absent} onClick={() => { setVisible(v => ({ ...v, [key]: !v[key] })); if (visible[key] && chosenPart?.kind === key) setSelected(null) }} aria-label={absent ? '无盒盖' : action} aria-pressed={!absent && visible[key]} title={absent ? '当前为开放式收纳' : action} className={`${!visible[key] ? 'muted' : ''} ${key === 'lid' ? 'lid-visibility' : ''}`}><i style={{ background: color }} /><span>{key === 'lid' ? absent ? '无盒盖' : action : label}</span><small>{key === 'inner' ? `× ${groups.length}` : absent ? '—' : '× 1'}</small>{visible[key] && !absent ? <Eye size={13} /> : <EyeOff size={13} />}</button>
+            return <button key={key} disabled={absent} onClick={() => { setVisible(v => ({ ...v, [key]: !v[key] })); if (visible[key] && chosenPart?.kind === key) setSelected(null) }} aria-label={absent ? '无盒盖' : action} aria-pressed={!absent && visible[key]} title={absent ? '当前为开放式收纳' : action} className={!visible[key] ? 'muted' : ''}><i style={{ background: color }} /><span>{label}</span><small>{key === 'inner' ? `× ${groups.length}` : absent ? '—' : '× 1'}</small>{visible[key] && !absent ? <Eye size={13} /> : <EyeOff size={13} />}</button>
           })}<label className="part-picker">编辑零件<select aria-label="选择编辑零件" value={selected ?? ''} disabled={busy || !model} onChange={event => selectPart(event.target.value || null)}><option value="">点击模型或选择…</option>{model?.parts.map(part => <option key={part.id} value={part.id}>{part.name}</option>)}</select></label></div>
           <div className="view-toolbar"><button aria-label="恢复透视视角" title="恢复透视视角" onClick={() => setCameraView(v => ({ name: 'iso', tick: v.tick + 1 }))}><Maximize size={17} /></button><button aria-label="俯视图" title="俯视图" onClick={() => setCameraView(v => ({ name: 'top', tick: v.tick + 1 }))}><Grid2X2 size={17} /></button><button aria-label="正视图" title="正视图" onClick={() => setCameraView(v => ({ name: 'front', tick: v.tick + 1 }))}><Box size={17} /></button><span /><button aria-label="透视外盒" title="透视外盒" className={transparent ? 'active' : ''} onClick={() => setTransparent(!transparent)}><Scan size={17} /></button><button aria-label="自动旋转" title="自动旋转" className={autoRotate ? 'active' : ''} onClick={() => setAutoRotate(!autoRotate)}><RotateCw size={17} /></button></div>
           {mode === 'exploded' && <div className="explode-control"><Expand size={15} /><label htmlFor="explosion">展开程度</label><input id="explosion" type="range" min="0" max="100" value={explosion} onChange={e => setExplosion(Number(e.target.value))} /><span>{explosion}%</span></div>}
@@ -306,19 +307,20 @@ export default function App() {
       </main>
     </div>
 
-    {modal === 'export' && model && <Modal eyebrow="STEP / STL / ZIP" title="导出模型" onClose={() => setModal(null)}>
+    {modal === 'export' && model && <Modal eyebrow="STEP / STL / FREECAD" title="导出模型" onClose={() => setModal(null)}>
       <div className="export-format" role="group" aria-label="导出格式">
         <button aria-pressed={exportFormat === 'step'} onClick={() => setExportFormat('step')}>STEP <small>默认</small></button>
         <button aria-pressed={exportFormat === 'stl'} onClick={() => setExportFormat('stl')}>STL</button>
+        <button aria-pressed={exportFormat === 'freecad'} onClick={() => setExportFormat('freecad')}>FreeCAD</button>
       </div>
       <div className="export-choices">
-        <button className={exportTarget === 'plate' ? 'selected' : ''} onClick={() => setExportTarget('plate')}><Grid2X2 size={21} /><span><strong>整套零件 · {exportFormat.toUpperCase()}</strong><small>{model.parts.length} 个零件平铺在同一文件中</small></span><span className="radio-dot">{exportTarget === 'plate' && <i />}</span></button>
-        <button className={exportTarget === 'kit' ? 'selected' : ''} onClick={() => setExportTarget('kit')}><Package size={21} /><span><strong>逐件打包 · ZIP</strong><small>{model.parts.length} 个独立 {exportFormat.toUpperCase()} + 参数清单</small></span><span className="radio-dot">{exportTarget === 'kit' && <i />}</span></button>
+        <button className={exportTarget === 'plate' ? 'selected' : ''} onClick={() => setExportTarget('plate')}><Grid2X2 size={21} /><span><strong>整套零件 · {exportLabel}</strong><small>{exportFormat === 'freecad' ? `一次生成 ${model.parts.length} 个可编辑零件，平铺放置` : `${model.parts.length} 个零件平铺在同一文件中`}</small></span><span className="radio-dot">{exportTarget === 'plate' && <i />}</span></button>
+        <button className={exportTarget === 'kit' ? 'selected' : ''} onClick={() => setExportTarget('kit')}><Package size={21} /><span><strong>逐件打包 · ZIP</strong><small>{model.parts.length} 个独立 {exportFormat === 'freecad' ? 'FCMacro' : exportLabel} + 参数清单</small></span><span className="radio-dot">{exportTarget === 'kit' && <i />}</span></button>
       </div>
       <label className="export-select-label">或单独导出一个零件<select aria-label="选择单独导出的零件" value={exportTarget === 'kit' || exportTarget === 'plate' ? '' : exportTarget} onChange={e => setExportTarget(e.target.value || 'plate')}><option value="">选择零件…</option>{model.parts.map(p => <option key={p.id} value={p.id}>{p.name} · {p.bounds.map(fmt).join(' × ')} mm</option>)}</select></label>
-      <div className="export-info"><ShieldCheck size={17} /><p>毫米单位，零件底部平放。导入 Bambu Studio 后按热床尺寸重新排盘。{exportFormat === 'step' && <><br />STEP 为分面实体，保留当前模型精度。</>}</p></div>
+      <div className="export-info"><ShieldCheck size={17} /><p>{exportFormat === 'freecad' ? <>在 FreeCAD 中运行 .FCMacro，生成可编辑草图、拉伸与切除，再另存为 .FCStd。</> : <>毫米单位，零件底部平放。导入 Bambu Studio 后按热床尺寸重新排盘。{exportFormat === 'step' && <><br />解析 CAD 实体，保留圆弧与曲面；STEP 不包含建模历史。</>}</>}</p></div>
       {model.warnings.length > 0 && <div className="export-warnings">{model.warnings.map((w, i) => <p key={i}>{w}</p>)}</div>}
-      <div className="export-footer"><span>{exportTarget === 'plate' || exportTarget === 'kit' ? model.parts.length : 1} 件 · {exportFormat.toUpperCase()}<small>{readyDownload ? readyDownload.filename : '正在生成文件'}</small></span>{readyDownload ? <a className="primary-button" href={readyDownload.href} download={readyDownload.filename} onClick={() => setToast(`已发起下载：${readyDownload.filename}，请在浏览器下载列表中查看`)}><ArrowDownToLine size={17} />下载文件</a> : <button className="primary-button" disabled>{!exportError && <span className="spinner" />}{exportError ? '生成失败' : '准备文件…'}</button>}</div>
+      <div className="export-footer"><span>{exportTarget === 'plate' || exportTarget === 'kit' ? model.parts.length : 1} 件 · {exportLabel}<small>{readyDownload ? readyDownload.filename : '正在生成文件'}</small></span>{readyDownload ? <a className="primary-button" href={readyDownload.href} download={readyDownload.filename} onClick={() => setToast(`已发起下载：${readyDownload.filename}，请在浏览器下载列表中查看`)}><ArrowDownToLine size={17} />下载文件</a> : <button className="primary-button" disabled>{!exportError && <span className="spinner" />}{exportError ? '生成失败' : '准备文件…'}</button>}</div>
       {exportError && <p className="inline-warning" role="alert">{exportError}</p>}
     </Modal>}
 
@@ -329,7 +331,7 @@ export default function App() {
       {importError && <p className="import-error" role="alert">{importError}<span>当前设计未改变。</span></p>}
     </Modal>}
 
-    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择相邻格子合并。点击三维模型可单独编辑零件尺寸、壁厚与底厚。</p></div></li><li><span>03</span><div><strong>检查装配</strong><p>选择盒盖，切换组合、开盖、爆炸视图，拖动模型查看。</p></div></li><li><span>04</span><div><strong>导出与保存</strong><p>默认下载 STEP，也可选择 STL 或逐件 ZIP。导入 Bambu Studio 后重新排盘；通过「参数文件」保存 JSON，便于继续编辑。</p></div></li></ol></Modal>}
+    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择相邻格子合并。点击三维模型可单独编辑零件尺寸、壁厚与底厚。</p></div></li><li><span>03</span><div><strong>检查装配</strong><p>选择盒盖，切换组合、开盖、爆炸视图，拖动模型查看。</p></div></li><li><span>04</span><div><strong>导出与保存</strong><p>下载 STEP 或 STL，导入 Bambu Studio 后重新排盘；选择 FreeCAD 可继续编辑草图与建模步骤。通过「参数文件」保存 JSON，便于回到这里编辑。</p></div></li></ol></Modal>}
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>
 }
