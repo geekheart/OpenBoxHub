@@ -2,7 +2,7 @@
   "format": "openboxhub-parametric-kit",
   "version": 1,
   "units": "mm",
-  "generatedAt": "2026-09-20T06:20:24.425Z",
+  "generatedAt": "2026-09-20T07:03:00.690Z",
   "params": {
     "width": 145.4,
     "depth": 111.2,
@@ -45,6 +45,7 @@
       5
     ]
   ],
+  "overrides": {},
   "metrics": {
     "innerWidth": 141.4,
     "innerDepth": 107.2,
@@ -70,6 +71,13 @@
         111.2,
         24
       ],
+      "dimensions": {
+        "width": 145.4,
+        "depth": 111.2,
+        "height": 24,
+        "wall": 2,
+        "bottom": 2
+      },
       "volumeMm3": 54219.65885711613,
       "assemblyPosition": [
         0,
@@ -92,6 +100,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.43333333000001,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5893.632541765586,
       "cells": [
         0
@@ -117,6 +132,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.433333340000004,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5911.6568816121435,
       "cells": [
         1
@@ -142,6 +164,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.43333333000001,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5893.632541765586,
       "cells": [
         2
@@ -167,6 +196,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.43333333000001,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5893.632541765586,
       "cells": [
         3
@@ -192,6 +228,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.433333340000004,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5911.6568816121435,
       "cells": [
         4
@@ -217,6 +260,13 @@
         52.9,
         18.75
       ],
+      "dimensions": {
+        "width": 46.43333333000001,
+        "depth": 52.9,
+        "height": 18.75,
+        "wall": 1,
+        "bottom": 1
+      },
       "volumeMm3": 5893.632541765586,
       "cells": [
         5
@@ -242,6 +292,13 @@
         115.7,
         4.5
       ],
+      "dimensions": {
+        "width": 149.9,
+        "depth": 115.7,
+        "height": 4.5,
+        "wall": 2,
+        "bottom": 1.5
+      },
       "volumeMm3": 29021.943687922045,
       "assemblyPosition": [
         0,

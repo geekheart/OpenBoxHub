@@ -27,6 +27,18 @@ export interface Params {
   slotLength: number;
 }
 export type PartKind = 'outer' | 'inner' | 'lid';
+export interface PartDimensions {
+  width: number;
+  depth: number;
+  height: number;
+  wall: number;
+  bottom: number;
+}
+export type PartOverrides = Record<string, Partial<PartDimensions>>;
+/** A group's customization survives changes to its display index and cell order. */
+export function partOverrideKey(group: number[]): string {
+  return `inner:${[...group].sort((a, b) => a - b).join(',')}`;
+}
 export interface PartData {
   id: string;
   name: string;
@@ -38,6 +50,10 @@ export interface PartData {
   assemblyRotation?: Vec3;
   /** Width, depth and height in canonical print orientation. */
   bounds: Vec3;
+  dimensions: PartDimensions;
+  overrideKey?: string;
+  /** Rectangular grid footprint; rounded corners do not change this classification. */
+  isRectangular: boolean;
   volume: number;
   cellIds?: number[];
 }
@@ -55,6 +71,7 @@ export interface ModelMetrics {
 export interface ModelData {
   params: Params;
   groups: number[][];
+  overrides: PartOverrides;
   parts: PartData[];
   metrics: ModelMetrics;
   warnings: string[];

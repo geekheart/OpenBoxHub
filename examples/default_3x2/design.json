@@ -1,0 +1,49 @@
+{
+  "format": "openboxhub-design",
+  "version": 1,
+  "units": "mm",
+  "params": {
+    "width": 145.4,
+    "depth": 111.2,
+    "height": 24,
+    "wall": 2,
+    "bottom": 2,
+    "radius": 5,
+    "rows": 2,
+    "cols": 3,
+    "gap": 0.35,
+    "innerWall": 1,
+    "innerBottom": 1,
+    "lidType": "sleeve",
+    "lidThickness": 1.5,
+    "lidDepth": 3,
+    "lidClearance": 0.25,
+    "baseStyle": "solid",
+    "holeSize": 12,
+    "ribWidth": 1.6,
+    "holeMargin": 3,
+    "slotLength": 22
+  },
+  "groups": [
+    [
+      0
+    ],
+    [
+      1
+    ],
+    [
+      2
+    ],
+    [
+      3
+    ],
+    [
+      4
+    ],
+    [
+      5
+    ]
+  ],
+  "overrides": {},
+  "locked": false
+}

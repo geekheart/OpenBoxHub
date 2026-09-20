@@ -1,22 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleHelp, Copy, Expand, Eye, EyeOff, Grid2X2, Layers, LockKeyhole, Maximize, Merge, Minus, MousePointer2, Package, Plus, RotateCcw, RotateCw, Scan, ShieldCheck, SlidersHorizontal, Split, UnlockKeyhole, X } from 'lucide-react'
+import { Box, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleHelp, FileJson, FolderOpen, Expand, Eye, EyeOff, Grid2X2, Layers, LockKeyhole, Maximize, Merge, Minus, MousePointer2, Package, Plus, RotateCcw, RotateCw, Scan, ShieldCheck, SlidersHorizontal, Split, UnlockKeyhole, X } from 'lucide-react'
 import Scene, { INNER_COLORS, type CameraView, type ViewMode } from './Scene'
-import { DEFAULT_PARAMS, defaultGroups, type ModelData, type Params } from './types'
+import { DEFAULT_PARAMS, defaultGroups, partOverrideKey, type ModelData, type Params, type PartDimensions, type PartOverrides } from './types'
 import { createExportFile } from './export'
+import { createDesignFile, parseDesignFile, MAX_DESIGN_FILE_BYTES, type DesignConfig } from './design'
+import NumberField from './NumberField'
+import PartInspector from './PartInspector'
 
 const fmt = (n: number) => Number(n.toFixed(2)).toString()
-const lidNames = { none: '无盖', sleeve: '外套式盒盖', inset: '内嵌定位盖' }
-
-function NumberField({ label, value, onChange, min = 0.1, max = 400, step = 0.1, disabled = false, hint }: { label: string; value: number; onChange: (value: number) => void; min?: number; max?: number; step?: number; disabled?: boolean; hint?: string }) {
-  const [text, setText] = useState(String(value))
-  useEffect(() => setText(String(value)), [value])
-  function commit() {
-    const next = Number(text)
-    if (text.trim() === '' || !Number.isFinite(next)) setText(String(value))
-    else onChange(next)
-  }
-  return <label className={`number-field ${disabled ? 'disabled' : ''}`}><span>{label}</span><div><input aria-label={label} type="number" value={text} min={min} max={max} step={step} disabled={disabled} onChange={e => setText(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }} /><span>mm</span></div>{hint && <small>{hint}</small>}</label>
-}
 
 function Modal({ title, eyebrow, children, onClose }: { title: string; eyebrow: string; children: React.ReactNode; onClose: () => void }) {
   const panel = useRef<HTMLDivElement>(null)
@@ -53,6 +44,7 @@ function connected(cells: number[], cols: number) {
 export default function App() {
   const [params, setParams] = useState<Params>({ ...DEFAULT_PARAMS })
   const [groups, setGroups] = useState(() => defaultGroups(DEFAULT_PARAMS.rows, DEFAULT_PARAMS.cols))
+  const [overrides, setOverrides] = useState<PartOverrides>({})
   const [tab, setTab] = useState<'outer' | 'inner' | 'lid'>('outer')
   const [locked, setLocked] = useState(false)
   const [model, setModel] = useState<ModelData | null>(null)
@@ -68,10 +60,16 @@ export default function App() {
   const [cameraView, setCameraView] = useState<CameraView>({ name: 'iso', tick: 0 })
   const [selected, setSelected] = useState<string | null>(null)
   const [selection, setSelection] = useState<number[]>([])
-  const [modal, setModal] = useState<'export' | 'reference' | 'help' | null>(null)
+  const [modal, setModal] = useState<'export' | 'design' | 'help' | null>(null)
   const [exportTarget, setExportTarget] = useState('kit')
   const [download, setDownload] = useState<{ href: string; filename: string; target: string; model: ModelData } | null>(null)
   const [exportError, setExportError] = useState('')
+  const [designDownload, setDesignDownload] = useState<{ href: string; filename: string; model: ModelData; locked: boolean } | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState('')
+  const fileInput = useRef<HTMLInputElement>(null)
+  const pendingImport = useRef<{ id: number; config: DesignConfig } | null>(null)
+  const appliedImport = useRef<DesignConfig | null>(null)
   const [toast, setToast] = useState('')
   const worker = useRef<Worker | null>(null)
   const stage = useRef<HTMLDivElement>(null)
@@ -83,18 +81,33 @@ export default function App() {
     w.onmessage = e => {
       if (e.data.id !== requestId.current) return
       setBusy(false)
+      const incoming = pendingImport.current
+      if (incoming && incoming.id === e.data.id) {
+        pendingImport.current = null; setImporting(false)
+        if (e.data.error) { setImportError(e.data.error); return }
+        const config = incoming.config
+        appliedImport.current = config
+        setParams(config.params); setGroups(config.groups); setOverrides(config.overrides); setLocked(config.locked)
+        setModel(e.data.model); setError(''); setSelected(null); setSelection([])
+        setVisible({ outer: true, inner: true, lid: true }); setMode('open'); setAutoRotate(false)
+        setCameraView(v => ({ name: 'iso', tick: v.tick + 1 })); setModal(null); setToast('参数已导入')
+        return
+      }
       if (e.data.error) setError(e.data.error)
       else { setModel(e.data.model); setError('') }
     }
-    w.onerror = () => { setBusy(false); setError('建模引擎加载失败，请刷新页面重试。') }
+    w.onerror = () => { setBusy(false); setImporting(false); pendingImport.current = null; setError('建模引擎加载失败，请刷新页面重试。') }
     return () => { w.terminate(); worker.current = null }
   }, [])
   useEffect(() => {
+    const imported = appliedImport.current
+    if (imported && imported.params === params && imported.groups === groups && imported.overrides === overrides) { appliedImport.current = null; return }
+    pendingImport.current = null; setImporting(false)
     setBusy(true); setError('')
     const id = ++requestId.current
-    const timer = setTimeout(() => worker.current?.postMessage({ id, params, groups }), 160)
+    const timer = setTimeout(() => worker.current?.postMessage({ id, params, groups, overrides }), 160)
     return () => clearTimeout(timer)
-  }, [params, groups])
+  }, [params, groups, overrides])
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer) }, [toast])
   useEffect(() => {
     if (!fullScreen) return
@@ -114,7 +127,46 @@ export default function App() {
 
   function update<K extends keyof Params>(key: K, value: Params[K]) { setParams(p => ({ ...p, [key]: value })) }
   function updateGrid(rows: number, cols: number) {
-    setParams(p => ({ ...p, rows, cols })); setGroups(defaultGroups(rows, cols)); setSelection([]); setSelected(null)
+    setParams(p => ({ ...p, rows, cols })); setGroups(defaultGroups(rows, cols)); setOverrides(prev => { const next: PartOverrides = {}; if (prev.lid) next.lid = prev.lid; return next }); setSelection([]); setSelected(null)
+  }
+  function changeGroups(next: number[][]) {
+    const keys = new Set(['lid', ...next.map(partOverrideKey)])
+    setGroups(next)
+    setOverrides(prev => Object.fromEntries(Object.entries(prev).filter(([key]) => keys.has(key))))
+  }
+  function applyPartValues(values: PartDimensions) {
+    if (!chosenPart || busy) return
+    if (chosenPart.kind === 'outer') setParams(prev => ({ ...prev, ...values, ...(locked ? { width: prev.width, depth: prev.depth, height: prev.height } : {}) }))
+    else if (chosenPart.overrideKey) setOverrides(prev => ({ ...prev, [chosenPart.overrideKey!]: { ...values } }))
+  }
+  function resetPartValues() {
+    if (!chosenPart?.overrideKey) return
+    setOverrides(prev => { const next = { ...prev }; delete next[chosenPart.overrideKey!]; return next })
+  }
+  async function importDesign(file: File) {
+    const id = ++requestId.current
+    setImportError(''); setImporting(true); setBusy(true)
+    try {
+      if (file.size > MAX_DESIGN_FILE_BYTES) throw new Error('参数文件不能超过 1 MB。')
+      const contents = await file.text()
+      if (id !== requestId.current) return
+      const config = parseDesignFile(contents)
+      if (!worker.current) throw new Error('建模引擎尚未准备好，请稍后重试。')
+      pendingImport.current = { id, config }
+      worker.current.postMessage({ id, params: config.params, groups: config.groups, overrides: config.overrides })
+    } catch (failure) {
+      if (id !== requestId.current) return
+      pendingImport.current = null; setImporting(false); setBusy(false)
+      setImportError(failure instanceof Error ? failure.message : '参数文件读取失败。')
+    }
+  }
+  function closeDesignModal() {
+    if (importing) {
+      ++requestId.current
+      pendingImport.current = null
+      setImporting(false); setBusy(false)
+    }
+    setModal(null)
   }
   function toggleCell(cell: number) {
     const group = groups.find(g => g.includes(cell))!
@@ -126,18 +178,21 @@ export default function App() {
   const canSplit = groups.some(g => g.length > 1 && g.some(c => selection.includes(c)))
   function mergeSelection() {
     if (!canMerge) return
-    setGroups(prev => [...prev.filter(g => !g.some(c => selection.includes(c))), [...selection].sort((a, b) => a - b)].sort((a, b) => a[0] - b[0]))
+    const next = [...groups.filter(g => !g.some(c => selection.includes(c))), [...selection].sort((a, b) => a - b)].sort((a, b) => a[0] - b[0])
+    changeGroups(next)
     setSelection([]); setSelected(null)
     setToast('相邻格子已合并为一个独立内盒')
   }
   function splitSelection() {
-    setGroups(prev => prev.flatMap(g => g.some(c => selection.includes(c)) ? g.map(c => [c]) : [g]).sort((a, b) => a[0] - b[0]))
+    changeGroups(groups.flatMap(g => g.some(c => selection.includes(c)) ? g.map(c => [c]) : [g]).sort((a, b) => a[0] - b[0]))
     setSelection([]); setSelected(null)
   }
   function selectPart(id: string | null) {
+    if (busy) return
     setSelected(id)
     const part = model?.parts.find(p => p.id === id)
-    if (part?.cellIds) { setSelection(part.cellIds); setTab('inner') }
+    if (part) setTab(part.kind)
+    setSelection(part?.cellIds ?? [])
   }
   useEffect(() => {
     setDownload(null); setExportError('')
@@ -157,9 +212,18 @@ export default function App() {
       if (href) { const url = href; setTimeout(() => URL.revokeObjectURL(url), 30_000) }
     }
   }, [modal, model, busy, error, exportTarget])
+  useEffect(() => {
+    setDesignDownload(null)
+    if (modal !== 'design' || !model || busy || error) return
+    const file = createDesignFile({ params: model.params, groups: model.groups, overrides: model.overrides, locked })
+    const href = URL.createObjectURL(file.blob)
+    setDesignDownload({ href, filename: file.filename, model, locked })
+    return () => { setTimeout(() => URL.revokeObjectURL(href), 30_000) }
+  }, [modal, model, busy, error, locked])
   const readyDownload = !busy && !error && download?.model === model && download?.target === exportTarget ? download : null
+  const readyDesignDownload = !busy && !error && designDownload?.model === model && designDownload?.locked === locked ? designDownload : null
   const chosenPart = model?.parts.find(p => p.id === selected)
-  const innerParts = model?.parts.filter(p => p.kind === 'inner') ?? []
+  const partValues = chosenPart ? chosenPart.kind === 'outer' ? { width: params.width, depth: params.depth, height: params.height, wall: params.wall, bottom: params.bottom } : { ...chosenPart.dimensions, ...overrides[chosenPart.overrideKey ?? ''] } : null
   const mass = model ? model.metrics.totalVolume / 1000 * 1.24 : 0
   const field = (key: keyof Params, label: string, options: Partial<React.ComponentProps<typeof NumberField>> = {}) => <NumberField label={label} value={params[key] as number} onChange={v => update(key, v)} {...options} />
 
@@ -167,7 +231,7 @@ export default function App() {
     <header className="app-header">
       <a className="brand" href="./" aria-label="OpenBoxHub 首页"><span className="brand-icon"><Box size={24} strokeWidth={1.6} /></span><span>OpenBox<em>Hub</em><span className="brand-sub">参数化收纳盒工坊</span></span></a>
       <div className="project-title"><span className="project-dot" />未命名设计 <span className="project-badge">本地工作台</span></div>
-      <div className="header-actions"><button className="text-button reference-button" onClick={() => setModal('reference')}><Copy size={15} />参考模型<ArrowUpRight size={14} /></button><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('help')}><CircleHelp size={19} /></button><span className="header-divider" /><button className="primary-button export-main" disabled={!model || busy || !!error} onClick={() => { setExportTarget('kit'); setModal('export') }}><ArrowDownToLine size={17} />导出 STL<ChevronDown size={14} /></button></div>
+      <div className="header-actions"><button className="text-button design-file-button" aria-label="参数文件" onClick={() => { setImportError(''); setModal('design') }}><FileJson size={16} /><span>参数文件</span></button><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('help')}><CircleHelp size={19} /></button><span className="header-divider" /><button className="primary-button export-main" disabled={!model || busy || !!error} onClick={() => { setExportTarget('kit'); setModal('export') }}><ArrowDownToLine size={17} />导出 STL<ChevronDown size={14} /></button></div>
     </header>
 
     <div className="workspace">
@@ -191,7 +255,7 @@ export default function App() {
 
           {tab === 'inner' && <>
             <section className="control-section"><div className="section-title"><h2><span>01</span>划分空间</h2><span className="mini-badge">{groups.length} 个独立内盒</span></div><p className="section-description">调整行列数会恢复等分布局。</p><div className="grid-counters">{([['cols', '横向列数'], ['rows', '纵向行数']] as const).map(([key, label]) => <div className="counter" key={key}><label>{label}</label><div><button aria-label={`减少${label}`} disabled={params[key] <= 1} onClick={() => updateGrid(key === 'rows' ? params.rows - 1 : params.rows, key === 'cols' ? params.cols - 1 : params.cols)}><Minus size={13} /></button><strong>{params[key]}</strong><button aria-label={`增加${label}`} disabled={params[key] >= 12} onClick={() => updateGrid(key === 'rows' ? params.rows + 1 : params.rows, key === 'cols' ? params.cols + 1 : params.cols)}><Plus size={13} /></button></div></div>)}</div><div className="layout-presets"><span>快速布局</span>{[[2, 3], [3, 4], [1, 1]].map(([r, c]) => <button key={`${r}-${c}`} onClick={() => updateGrid(r, c)}>{c} × {r}</button>)}</div></section>
-            <section className="control-section grid-section"><div className="section-title"><h2><span>02</span>自由组合</h2><button className="tiny-button" onClick={() => { setGroups(defaultGroups(params.rows, params.cols)); setSelection([]) }}>恢复等分</button></div><p className="section-description">点击选择相邻格子，合并为一个内盒。</p><div className="cell-grid" style={{ gridTemplateColumns: `repeat(${params.cols}, 1fr)`, aspectRatio: `${params.width} / ${params.depth}` }} aria-label="内盒分格编辑器">{Array.from({ length: params.rows * params.cols }, (_, cell) => {
+            <section className="control-section grid-section"><div className="section-title"><h2><span>02</span>自由组合</h2><button className="tiny-button" onClick={() => updateGrid(params.rows, params.cols)}>恢复等分</button></div><p className="section-description">点击选择相邻格子，合并为一个内盒。</p><div className="cell-grid" style={{ gridTemplateColumns: `repeat(${params.cols}, 1fr)`, aspectRatio: `${params.width} / ${params.depth}` }} aria-label="内盒分格编辑器">{Array.from({ length: params.rows * params.cols }, (_, cell) => {
               const gi = groups.findIndex(g => g.includes(cell)), group = groups[gi], sel = selection.includes(cell)
               const right = cell % params.cols < params.cols - 1 && group.includes(cell + 1)
               const bottom = cell < params.cols * (params.rows - 1) && group.includes(cell + params.cols)
@@ -205,7 +269,7 @@ export default function App() {
             <section className="control-section"><div className="section-title"><h2><span>02</span>装配参数</h2></div><div className="two-fields">{field('lidThickness', '盖板厚度', { disabled: params.lidType === 'none', min: 0.8, max: 8 })}{field('lidDepth', '定位边深度', { min: 1, max: 10 })}{field('lidClearance', '单边配合间隙', { min: 0.1, max: 1.5, step: 0.05 })}</div><div className="fit-note"><ShieldCheck size={18} /><div><strong>打印配合间隙</strong><p>初始单边间隙为 0.25 mm。材料和打印机表现不同，建议先试打确认松紧。</p></div></div><p className="section-description">定位边越深，内盒可用高度越小。</p></section>
           </>}
         </div>
-        <div className="sidebar-footer"><span><span className={`status-dot ${busy ? 'busy' : error ? 'error' : ''}`} />{busy ? '正在更新模型' : error ? '请检查参数' : '实体模型已就绪'}</span><button className="tiny-button" onClick={() => { setParams({ ...DEFAULT_PARAMS }); setGroups(defaultGroups(DEFAULT_PARAMS.rows, DEFAULT_PARAMS.cols)); setSelection([]); setLocked(false); setSelected(null); setToast('已恢复默认参数与布局') }}><RotateCcw size={12} />重置</button></div>
+        <div className="sidebar-footer"><span><span className={`status-dot ${busy ? 'busy' : error ? 'error' : ''}`} />{busy ? '正在更新模型' : error ? '请检查参数' : '实体模型已就绪'}</span><button className="tiny-button" onClick={() => { setParams({ ...DEFAULT_PARAMS }); setGroups(defaultGroups(DEFAULT_PARAMS.rows, DEFAULT_PARAMS.cols)); setOverrides({}); setSelection([]); setLocked(false); setSelected(null); setToast('已恢复默认参数与布局') }}><RotateCcw size={12} />重置</button></div>
       </aside>
 
       <main className="preview-area">
@@ -215,25 +279,30 @@ export default function App() {
           <div className="stage-label"><span className="live-dot" />3D 预览<span className="unit-label">mm</span></div>
           <button className="fullscreen-button" onClick={toggleFullScreen} aria-label={fullScreen ? '退出全屏预览' : '全屏预览'} title={fullScreen ? 'Esc 返回参数编辑' : '铺满整个窗口查看模型'}>{fullScreen ? <X size={16} /> : <Expand size={16} />}<span>{fullScreen ? '返回编辑' : '全屏'}</span>{fullScreen && <kbd>Esc</kbd>}</button>
           {fullScreen && <div className="fullscreen-modes"><div className="fullscreen-brand"><Box size={21} />OpenBoxHub<span>3D 工作台</span></div><div className="view-segments">{([['assembly', '组合', Box], ['open', '开盖', Layers], ['exploded', '爆炸', Expand]] as const).map(([id, label, Icon]) => <button key={id} onClick={() => setMode(id)} aria-pressed={mode === id} className={mode === id ? 'active' : ''}><Icon size={15} />{label}</button>)}</div></div>}
-          <div className="parts-panel"><div className="parts-heading"><Layers size={13} /><span>组件</span><span>{model?.parts.length ?? '—'}</span></div>{([['outer', '外盒', '#708671'], ['inner', '内盒', '#d4dcca'], ['lid', '盒盖', '#81947a']] as const).map(([key, label, color]) => <button key={key} disabled={key === 'lid' && params.lidType === 'none'} onClick={() => setVisible(v => ({ ...v, [key]: !v[key] }))} aria-label={`${visible[key] ? '隐藏' : '显示'}${label}`} className={!visible[key] ? 'muted' : ''}><i style={{ background: color }} /><span>{label}</span><small>{key === 'inner' ? `× ${groups.length}` : key === 'lid' && params.lidType === 'none' ? '—' : '× 1'}</small>{visible[key] ? <Eye size={13} /> : <EyeOff size={13} />}</button>)}</div>
+          <div className="parts-panel"><div className="parts-heading"><Layers size={13} /><span>组件</span><span>{model?.parts.length ?? '—'}</span></div>{([['outer', '外盒', '#708671'], ['inner', '内盒', '#d4dcca'], ['lid', '盒盖', '#81947a']] as const).map(([key, label, color]) => <button key={key} disabled={key === 'lid' && params.lidType === 'none'} onClick={() => setVisible(v => ({ ...v, [key]: !v[key] }))} aria-label={`${visible[key] ? '隐藏' : '显示'}${label}`} className={!visible[key] ? 'muted' : ''}><i style={{ background: color }} /><span>{label}</span><small>{key === 'inner' ? `× ${groups.length}` : key === 'lid' && params.lidType === 'none' ? '—' : '× 1'}</small>{visible[key] ? <Eye size={13} /> : <EyeOff size={13} />}</button>)}<label className="part-picker">编辑零件<select aria-label="选择编辑零件" value={selected ?? ''} disabled={busy || !model} onChange={event => selectPart(event.target.value || null)}><option value="">点击模型或选择…</option>{model?.parts.map(part => <option key={part.id} value={part.id}>{part.name}</option>)}</select></label></div>
           <div className="view-toolbar"><button aria-label="恢复透视视角" title="恢复透视视角" onClick={() => setCameraView(v => ({ name: 'iso', tick: v.tick + 1 }))}><Maximize size={17} /></button><button aria-label="俯视图" title="俯视图" onClick={() => setCameraView(v => ({ name: 'top', tick: v.tick + 1 }))}><Grid2X2 size={17} /></button><button aria-label="正视图" title="正视图" onClick={() => setCameraView(v => ({ name: 'front', tick: v.tick + 1 }))}><Box size={17} /></button><span /><button aria-label="透视外盒" title="透视外盒" className={transparent ? 'active' : ''} onClick={() => setTransparent(!transparent)}><Scan size={17} /></button><button aria-label="自动旋转" title="自动旋转" className={autoRotate ? 'active' : ''} onClick={() => setAutoRotate(!autoRotate)}><RotateCw size={17} /></button></div>
           {mode === 'exploded' && <div className="explode-control"><Expand size={15} /><label htmlFor="explosion">展开程度</label><input id="explosion" type="range" min="0" max="100" value={explosion} onChange={e => setExplosion(Number(e.target.value))} /><span>{explosion}%</span></div>}
-          {(error || viewError) && <div className="model-error" role="alert"><strong>{viewError ? '预览暂不可用' : '这些参数还不能生成盒子'}</strong><p>{error || viewError}</p>{error && <small>预览保留上一次有效模型，修正参数后自动更新。</small>}</div>}
+          {((error && !chosenPart) || viewError) && <div className="model-error" role="alert"><strong>{viewError ? '预览暂不可用' : '这些参数还不能生成盒子'}</strong><p>{error || viewError}</p>{error && <small>预览保留上一次有效模型，修正参数后自动更新。</small>}</div>}
           {busy && <div className="updating-badge"><span className="spinner" />{model ? '更新模型中' : '正在生成模型'}</div>}
-          {chosenPart && <div className="selected-part"><span className="eyebrow">已选零件</span><strong>{chosenPart.name}</strong><span>{chosenPart.bounds.map(fmt).join(' × ')} mm</span><button className="icon-button" aria-label="取消选择" onClick={() => setSelected(null)}><X size={14} /></button></div>}
+          {chosenPart && partValues && <PartInspector part={chosenPart} values={partValues} custom={!!overrides[chosenPart.overrideKey ?? '']} locked={chosenPart.kind === 'outer' && locked} busy={busy} error={error} onApply={applyPartValues} onReset={resetPartValues} onClose={() => setSelected(null)} />}
           <div className="axis-widget" aria-hidden="true"><span className="z">Z</span><span className="y">Y</span><span className="x">X</span><i /><b /><em /></div>
           <div className="canvas-hint"><MousePointer2 size={13} />拖动旋转<span />滚轮缩放<span />右键平移</div>
         </div>
 
-        <div className="summary-strip"><div className="summary-icon"><Package size={22} strokeWidth={1.5} /></div><div className="summary-item"><span>外盒尺寸</span><strong>{fmt(params.width)} <i>×</i> {fmt(params.depth)} <i>×</i> {fmt(params.height)}<small>mm</small></strong></div><div className="summary-item"><span>内部布局</span><strong>{groups.length}<small>个内盒 / {params.cols} × {params.rows} 格</small></strong></div><div className="summary-item"><span>内盒高度</span><strong>{model ? fmt(model.metrics.innerHeight) : '—'}<small>mm</small></strong></div><div className="summary-item material-stat"><span>实体体积</span><strong>{model ? fmt(model.metrics.totalVolume / 1000) : '—'}<small>cm³</small></strong></div><div className="summary-status"><span><Check size={13} />{busy ? '更新中' : error ? '待修正' : '毫米建模'}</span><small>STL · Bambu Studio</small></div></div>
+        <div className="summary-strip"><div className="summary-icon"><Package size={22} strokeWidth={1.5} /></div><div className="summary-item"><span>外盒尺寸</span><strong>{fmt(params.width)} <i>×</i> {fmt(params.depth)} <i>×</i> {fmt(params.height)}<small>mm</small></strong></div><div className="summary-item"><span>内部布局</span><strong>{groups.length}<small>个内盒 / {params.cols} × {params.rows} 格</small></strong></div><div className="summary-item"><span>默认内盒高度</span><strong>{model ? fmt(model.metrics.innerHeight) : '—'}<small>mm</small></strong></div><div className="summary-item material-stat"><span>实体体积</span><strong>{model ? fmt(model.metrics.totalVolume / 1000) : '—'}<small>cm³</small></strong></div><div className="summary-status"><span><Check size={13} />{busy ? '更新中' : error ? '待修正' : '毫米建模'}</span><small>STL · Bambu Studio</small></div></div>
       </main>
     </div>
 
     {modal === 'export' && model && <Modal eyebrow="STL / ZIP" title="导出模型" onClose={() => setModal(null)}><p className="modal-description">文件由浏览器生成并下载。展示姿态不影响打印方向。</p><div className="export-choices"><button className={exportTarget === 'kit' ? 'selected' : ''} onClick={() => setExportTarget('kit')}><Package size={21} /><span><strong>整套零件 · ZIP</strong><small>{model.parts.length} 个独立 STL + 参数清单，推荐使用</small></span><span className="radio-dot">{exportTarget === 'kit' && <i />}</span></button><button className={exportTarget === 'plate' ? 'selected' : ''} onClick={() => setExportTarget('plate')}><Grid2X2 size={21} /><span><strong>平铺整套 · STL</strong><small>所有零件排开，可在切片软件中拆分重排</small></span><span className="radio-dot">{exportTarget === 'plate' && <i />}</span></button></div><label className="export-select-label">或单独导出一个零件<select aria-label="选择单独导出的零件" value={exportTarget === 'kit' || exportTarget === 'plate' ? '' : exportTarget} onChange={e => setExportTarget(e.target.value || 'kit')}><option value="">选择零件…</option>{model.parts.map(p => <option key={p.id} value={p.id}>{p.name} · {p.bounds.map(fmt).join(' × ')} mm</option>)}</select></label><div className="export-info"><ShieldCheck size={17} /><p>外盒与盖子分件打印；内盒底部朝下，盒盖平面朝下。ZIP 解压后将 STL 拖入 Bambu Studio，各零件作为独立对象导入，按打印机热床重新排盘。</p></div>{model.warnings.length > 0 && <div className="export-warnings">{model.warnings.map((w, i) => <p key={i}>{w}</p>)}</div>}<div className="export-footer"><span>{model.parts.length} 件 · 约 {fmt(mass)} g<small>按 PLA 实体体积估算，实际以切片为准</small></span>{readyDownload ? <a className="primary-button" href={readyDownload.href} download={readyDownload.filename} onClick={() => setToast(`已发起下载：${readyDownload.filename}，请在浏览器下载列表中查看`)}><ArrowDownToLine size={17} />下载文件</a> : <button className="primary-button" disabled>{!exportError && <span className="spinner" />}{exportError ? '生成失败' : '准备文件…'}</button>}</div>{exportError && <p className="inline-warning" role="alert">{exportError}</p>}</Modal>}
 
-    {modal === 'reference' && <Modal eyebrow="REFERENCE" title="参考模型" onClose={() => setModal(null)}><div className="reference-images"><figure><img src={`${import.meta.env.BASE_URL}reference-outer.png`} alt="参考3MF中的蜂窝底外盒和独立外套盒盖" /><figcaption>盒子.3mf<span>外盒 + 外套盖</span></figcaption></figure><figure><img src={`${import.meta.env.BASE_URL}reference-inner.png`} alt="参考3MF中的十二个小盒打印摆盘" /><figcaption>内层盒.3mf<span>12 个相同小盒</span></figcaption></figure></div><div className="reference-dimensions"><p><span>外盒</span><strong>145.4 × 111.2 × 24 mm</strong></p><p><span>参考盒盖</span><strong>149.5 × 115.3 × 4.5 mm</strong></p><p><span>参考小盒</span><strong>106.95 × 38 × 21 mm</strong></p></div><p className="modal-description">小盒参考尺寸不适用于直接拼装；生成的内盒会按外盒内腔重新计算尺寸。</p></Modal>}
+    {modal === 'design' && <Modal eyebrow="JSON" title="参数文件" onClose={closeDesignModal}>
+      <p className="modal-description">导出当前设计，或导入参数继续编辑。刷新页面会恢复默认设计。</p>
+      <div className="design-file-section"><FileJson size={23} /><div><h3>导出参数</h3><p>包含外盒、分组、盒盖与零件独立参数。</p></div>{readyDesignDownload ? <a className="primary-button" href={readyDesignDownload.href} download={readyDesignDownload.filename}><ArrowDownToLine size={15} />下载 JSON</a> : <button className="primary-button" disabled>等待有效模型</button>}</div>
+      <div className="design-file-section"><FolderOpen size={23} /><div><h3>导入参数</h3><p>选择参数 JSON 或 ZIP 中的 manifest.json。</p></div><button className="primary-button" disabled={importing || busy} onClick={() => fileInput.current?.click()}>{importing ? '正在校验…' : '选择参数文件'}</button><input ref={fileInput} className="visually-hidden" aria-label="导入参数文件" type="file" accept=".json,application/json" onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void importDesign(file) }} /></div>
+      {importError && <p className="import-error" role="alert">{importError}<span>当前设计未改变。</span></p>}
+    </Modal>}
 
-    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择边相邻的格子合并。矩形、L 形都可以。</p></div></li><li><span>03</span><div><strong>选择盒盖并检查装配</strong><p>外套盖或内嵌盖共用外盒。切换组合、开盖、爆炸视图，拖动模型从任意角度查看。</p></div></li><li><span>04</span><div><strong>导出并切片</strong><p>推荐下载 ZIP，将独立 STL 导入 Bambu Studio。数值单位为毫米，选择对应打印机重新排盘；先试打确认盖子配合。</p></div></li></ol></Modal>}
+    {modal === 'help' && <Modal eyebrow="QUICK START" title="使用指南" onClose={() => setModal(null)}><ol className="help-steps"><li><span>01</span><div><strong>确定外盒</strong><p>设置长、宽、高与壁厚。锁定外形后，继续设计内部空间。</p></div></li><li><span>02</span><div><strong>安排内盒</strong><p>按整数行列等分，再选择相邻格子合并。点击三维模型可单独编辑零件尺寸、壁厚与底厚。</p></div></li><li><span>03</span><div><strong>检查装配</strong><p>选择盒盖，切换组合、开盖、爆炸视图，拖动模型查看。</p></div></li><li><span>04</span><div><strong>导出与保存</strong><p>下载 ZIP，将独立 STL 导入 Bambu Studio。需要继续编辑时，通过「参数文件」导出 JSON；页面不保存历史记录。</p></div></li></ol></Modal>}
     {toast && <div className="toast" role="status"><Check size={16} />{toast}</div>}
   </div>
 }

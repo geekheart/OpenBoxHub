@@ -1,6 +1,6 @@
 import type { CrossSection, Manifold, ManifoldToplevel, Vec2 } from 'manifold-3d';
-import { defaultGroups } from './types';
-import type { ModelData, Params, PartData, Vec3 } from './types';
+import { defaultGroups, partOverrideKey } from './types';
+import type { ModelData, Params, PartData, PartDimensions, PartOverrides, Vec3 } from './types';
 
 type Disposable = { delete(): void };
 const ARC_SEGMENTS = 64;
@@ -71,11 +71,46 @@ export function validateParams(p: Params, groups?: number[][]): string[] {
   return errors;
 }
 
+/** Validate imported customizations before allocating any WASM objects. */
+export function validateOverrides(params: Params, groups: number[][], overrides: PartOverrides): string[] {
+  const isPlainObject = (value: unknown): value is object => value !== null && typeof value === 'object' &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+  if (!isPlainObject(overrides)) return ['独立零件参数必须是对象。'];
+  const allowedKeys = new Set(['lid', ...groups.map(partOverrideKey)]);
+  const fields = new Set(['width', 'depth', 'height', 'wall', 'bottom']);
+  const errors: string[] = [];
+  for (const [key, values] of Object.entries(overrides)) {
+    if (!allowedKeys.has(key)) { errors.push(`独立零件参数包含无效零件：${key}。`); continue; }
+    if (!isPlainObject(values)) { errors.push(`零件 ${key} 的参数必须是对象。`); continue; }
+    for (const [field, value] of Object.entries(values)) {
+      if (!fields.has(field)) errors.push(`零件 ${key} 包含不支持的参数：${field}。`);
+      else if (typeof value !== 'number' || !Number.isFinite(value)) errors.push(`零件 ${key} 的尺寸必须是有效数字。`);
+      else if (value <= 0 || value > 550) errors.push(`零件 ${key} 的尺寸需大于 0，且不超过 550 mm。`);
+    }
+    if (key === 'lid' && values.wall !== undefined && (values.wall < 0.8 || values.wall > 20)) errors.push('盒盖壁厚需为 0.8–20 mm。');
+    if (key === 'lid' && values.bottom !== undefined && (values.bottom < 0.8 || values.bottom > 20)) errors.push('盒盖顶板厚度需为 0.8–20 mm。');
+    if (key === 'lid') {
+      const skirtDepth = (values.height ?? params.lidThickness + params.lidDepth) - (values.bottom ?? params.lidThickness);
+      if (skirtDepth < 1 - EPSILON || skirtDepth > 20 + EPSILON || skirtDepth > params.height - params.bottom)
+        errors.push('盒盖总高减去顶板厚度后，裙边深度需为 1–20 mm，且不能超过外盒可用高度。');
+    }
+    if (key !== 'lid') {
+      if (values.wall !== undefined && (values.wall < 0.6 || values.wall > 10)) errors.push('独立内盒壁厚需为 0.6–10 mm。');
+      if (values.bottom !== undefined && (values.bottom < 0.6 || values.bottom > 10)) errors.push('独立内盒底厚需为 0.6–10 mm。');
+      if (values.height !== undefined && values.height > params.height - params.bottom - params.lidDepth - params.lidClearance + EPSILON)
+        errors.push('独立内盒高度超过盒盖预留空间下的可用高度。');
+    }
+  }
+  return errors;
+}
+
 /** Uses an initialized Manifold module. All WASM handles are disposed before return. */
-export function buildModel(module: ManifoldToplevel, params: Params, groups?: number[][]): ModelData {
+export function buildModel(module: ManifoldToplevel, params: Params, groups?: number[][], overrides: PartOverrides = {}): ModelData {
   const errors = validateParams(params, groups);
   if (errors.length) throw new Error(errors.join('\n'));
   groups ??= defaultGroups(params.rows, params.cols);
+  const overrideErrors = validateOverrides(params, groups, overrides);
+  if (overrideErrors.length) throw new Error(overrideErrors.join('\n'));
   const p = { ...params };
   const resources: Disposable[] = [];
   const keep = <T extends Disposable>(value: T): T => { resources.push(value); return value; };
@@ -98,7 +133,23 @@ export function buildModel(module: ManifoldToplevel, params: Params, groups?: nu
     components.forEach(keep);
     if (components.length !== 1) throw new Error(`${name}出现断开区域，请降低壁厚、间隙或圆角半径。`);
   };
-  const toPart = (solid: Manifold, data: Pick<PartData, 'id' | 'name' | 'kind'> & Partial<Pick<PartData, 'cellIds' | 'assemblyPosition' | 'assemblyRotation'>>): PartData => {
+  const resize = (shape: CrossSection, width: number, depth: number): CrossSection => {
+    const bounds = shape.bounds();
+    const w = bounds.max[0] - bounds.min[0], d = bounds.max[1] - bounds.min[1];
+    if (Math.abs(width - w) < 1e-8 && Math.abs(depth - d) < 1e-8) return shape;
+    const center: Vec2 = [(bounds.min[0] + bounds.max[0]) / 2, (bounds.min[1] + bounds.max[1]) / 2];
+    const centered = keep(shape.translate([-center[0], -center[1]]));
+    const scaled = keep(centered.scale([width / w, depth / d]));
+    return keep(scaled.translate(center));
+  };
+  const dimensions = (shape: CrossSection, height: number, wall: number, bottom: number): PartDimensions => {
+    const bounds = shape.bounds();
+    return { width: bounds.max[0] - bounds.min[0], depth: bounds.max[1] - bounds.min[1], height, wall, bottom };
+  };
+  const assertContained = (inside: CrossSection, outside: CrossSection, message: string): void => {
+    if (keep(inside.subtract(outside)).area() > EPSILON) throw new Error(message);
+  };
+  const toPart = (solid: Manifold, data: Pick<PartData, 'id' | 'name' | 'kind' | 'dimensions' | 'isRectangular'> & Partial<Pick<PartData, 'cellIds' | 'assemblyPosition' | 'assemblyRotation' | 'overrideKey'>>): PartData => {
     if (solid.status() !== 'NoError' || solid.isEmpty()) throw new Error(`${data.name}生成失败：${solid.status()}`);
     const box = solid.boundingBox();
     const cx = (box.min[0] + box.max[0]) / 2, cy = (box.min[1] + box.max[1]) / 2;
@@ -120,6 +171,7 @@ export function buildModel(module: ManifoldToplevel, params: Params, groups?: nu
     const cleanMesh = cleaned.getMesh();
     return { ...data, positions: new Float32Array(cleanMesh.vertProperties), indices: new Uint32Array(cleanMesh.triVerts),
       assemblyPosition: data.assemblyPosition ?? [cx, cy, box.min[2]],
+      dimensions: { ...data.dimensions, width: box.max[0] - box.min[0], depth: box.max[1] - box.min[1], height: box.max[2] - box.min[2] },
       bounds: box.max.map((n, i) => n - box.min[i]) as Vec3, volume: cleaned.volume() };
   };
 
@@ -181,7 +233,11 @@ export function buildModel(module: ManifoldToplevel, params: Params, groups?: nu
       } else warnings.push('当前孔尺寸与留边无法放置完整孔洞，已保留实体底板。');
       warnings.push('镂空底板含贯通孔，不适合散装细小物品。');
     }
-    const parts: PartData[] = [toPart(outer, { id: 'outer', name: '外盒', kind: 'outer', assemblyPosition: [0, 0, 0] })];
+    const parts: PartData[] = [toPart(outer, { id: 'outer', name: '外盒', kind: 'outer', assemblyPosition: [0, 0, 0],
+      dimensions: { width: p.width, depth: p.depth, height: p.height, wall: p.wall, bottom: p.bottom }, isRectangular: true })];
+    const insertSections: CrossSection[] = [];
+    const insertSolids: Manifold[] = [];
+    const insertEnvelope = offset(cavity, -p.gap);
     groups.forEach((group, i) => {
       const tiles = group.map(cell => {
         const row = Math.floor(cell / p.cols), col = cell % p.cols;
@@ -192,34 +248,72 @@ export function buildModel(module: ManifoldToplevel, params: Params, groups?: nu
       // Union first: merged cells never retain internal divider walls, including L shapes.
       const joined = keep(C.union(tiles));
       const fitted = keep(joined.intersect(cavity));
-      const outside = offset(fitted, -p.gap);
+      const original = offset(fitted, -p.gap);
+      assertSingle(original, `内盒 ${i + 1} 外轮廓`);
+      const overrideKey = partOverrideKey(group);
+      const custom = overrides[overrideKey] ?? {};
+      const size = { ...dimensions(original, ih, p.innerWall, p.innerBottom), ...custom };
+      if (size.width <= 2 * size.wall + 2 || size.depth <= 2 * size.wall + 2 || size.height <= size.bottom + 1)
+        throw new Error(`内盒 ${i + 1} 尺寸不足，请为内腔保留至少 2 mm 长宽和 1 mm 高度。`);
+      const outside = resize(original, size.width, size.depth);
       assertSingle(outside, `内盒 ${i + 1} 外轮廓`);
-      const inside = offset(outside, -p.innerWall);
+      assertContained(outside, insertEnvelope, `内盒 ${i + 1} 超出外盒可用内腔，请减小长宽或增加外盒尺寸。`);
+      for (let j = 0; j < insertSections.length; j++) {
+        const a = outside.bounds(), b = insertSections[j].bounds();
+        if (a.min[0] >= b.max[0] || b.min[0] >= a.max[0] || a.min[1] >= b.max[1] || b.min[1] >= a.max[1]) continue;
+        if (keep(outside.intersect(insertSections[j])).area() > EPSILON)
+          throw new Error(`内盒 ${i + 1} 与内盒 ${j + 1} 相交，请减小独立尺寸。`);
+      }
+      const inside = offset(outside, -size.wall);
       assertSingle(inside, `内盒 ${i + 1} 内腔`);
-      const solid = shell(outside, inside, ih, p.innerBottom);
-      const part = toPart(solid, { id: `inner-${i + 1}`, name: `内盒 ${String(i + 1).padStart(2, '0')}`, kind: 'inner', cellIds: [...group] });
+      const solid = shell(outside, inside, size.height, size.bottom);
+      const rows = group.map(cell => Math.floor(cell / p.cols)), cols = group.map(cell => cell % p.cols);
+      const isRectangular = (Math.max(...rows) - Math.min(...rows) + 1) * (Math.max(...cols) - Math.min(...cols) + 1) === group.length;
+      const part = toPart(solid, { id: `inner-${i + 1}`, name: `内盒 ${String(i + 1).padStart(2, '0')}`, kind: 'inner', cellIds: [...group],
+        dimensions: size, overrideKey, isRectangular });
       part.assemblyPosition[2] = p.bottom;
+      insertSections.push(outside);
+      insertSolids.push(keep(solid.translate([0, 0, p.bottom])));
       parts.push(part);
     });
     if (p.lidType !== 'none') {
       let lid: Manifold;
+      const custom = overrides.lid ?? {};
+      const originalFit = p.lidType === 'sleeve' ? offset(outline, p.lidClearance) : offset(cavity, -p.lidClearance);
+      const originalOutside = p.lidType === 'sleeve' ? offset(originalFit, p.wall) : outline;
+      const size = { ...dimensions(originalOutside, p.lidThickness + p.lidDepth, p.wall, p.lidThickness), ...custom };
+      const skirtDepth = size.height - size.bottom;
+      if (skirtDepth < 1 - EPSILON || skirtDepth > 20 + EPSILON || skirtDepth > p.height - p.bottom)
+        throw new Error('盒盖总高减去顶板厚度后，裙边深度需为 1–20 mm，且不能超过外盒可用高度。');
+      if (size.width <= 2 * size.wall + 2 || size.depth <= 2 * size.wall + 2)
+        throw new Error('盒盖长宽不足以容纳当前壁厚，请增大盒盖尺寸或减小壁厚。');
+      const lidOutside = resize(originalOutside, size.width, size.depth);
       if (p.lidType === 'sleeve') {
-        const fit = offset(outline, p.lidClearance);
-        const lidOutside = offset(fit, p.wall);
-        lid = shell(lidOutside, fit, p.lidThickness + p.lidDepth, p.lidThickness);
+        const fit = lidOutside === originalOutside && size.wall === p.wall ? originalFit : offset(lidOutside, -size.wall);
+        assertSingle(fit, '外套盖内腔');
+        assertContained(originalFit, fit, '外套盖内腔过小，无法套入外盒；请增大长宽或减小壁厚。');
+        lid = shell(lidOutside, fit, size.height, size.bottom);
       } else {
-        const fit = offset(cavity, -p.lidClearance);
-        const ringInside = offset(fit, -p.wall);
+        const fit = lidOutside === outline ? originalFit : offset(lidOutside, -p.wall - p.lidClearance);
+        assertSingle(fit, '盒盖定位裙边');
+        assertContained(fit, originalFit, '内嵌盖定位裙边超出外盒内腔，请减小盒盖长宽。');
+        assertContained(offset(cavity, 0.6), lidOutside, '内嵌盖顶板过小，无法覆盖外盒开口；请增大盒盖长宽。');
+        const ringInside = offset(fit, -size.wall);
         assertSingle(ringInside, '盒盖定位裙边内腔');
-        const plate = keep(outline.extrude(p.lidThickness));
+        const plate = keep(lidOutside.extrude(size.bottom));
         const ring = keep(fit.subtract(ringInside));
-        const skirt = keep(keep(ring.extrude(p.lidDepth)).translate([0, 0, p.lidThickness]));
+        const skirt = keep(keep(ring.extrude(skirtDepth)).translate([0, 0, size.bottom]));
         lid = keep(plate.add(skirt));
       }
+      const assembledLid = keep(keep(lid.rotate([180, 0, 0])).translate([0, 0, p.height + size.bottom]));
+      for (let i = 0; i < insertSolids.length; i++) {
+        if (keep(assembledLid.intersect(insertSolids[i])).volume() > EPSILON)
+          throw new Error(`盒盖定位裙边与内盒 ${i + 1} 相交，请减小盖高或降低该内盒高度。`);
+      }
       parts.push(toPart(lid, { id: 'lid', name: p.lidType === 'sleeve' ? '外套盖' : '内嵌定位盖', kind: 'lid',
-        assemblyPosition: [0, 0, p.height + p.lidThickness], assemblyRotation: [Math.PI, 0, 0] }));
+        assemblyPosition: [0, 0, p.height + size.bottom], assemblyRotation: [Math.PI, 0, 0], dimensions: size, overrideKey: 'lid', isRectangular: true }));
     }
-    return { params: p, groups: groups.map(g => [...g]), parts, warnings, metrics: {
+    return { params: p, groups: groups.map(g => [...g]), overrides: Object.fromEntries(Object.entries(overrides).map(([key, values]) => [key, { ...values }])), parts, warnings, metrics: {
       innerWidth: iw, innerDepth: id, innerHeight: ih, cellWidth: cw, cellDepth: cd,
       insertCount: groups.length, totalVolume: parts.reduce((sum, part) => sum + part.volume, 0),
       triangleCount: parts.reduce((sum, part) => sum + part.indices.length / 3, 0), holeCount,

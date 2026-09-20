@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { createDesignFile } from './design';
 import type { ModelData, PartData, Vec3 } from './types';
 
 export function partFilename(part: PartData): string {
@@ -63,11 +64,12 @@ export function layoutPrintPlate(parts: PartData[], spacing = 8): { positions: F
 export function createManifest(model: ModelData): object {
   return {
     format: 'openboxhub-parametric-kit', version: 1, units: 'mm', generatedAt: new Date().toISOString(),
-    params: model.params, groups: model.groups, metrics: model.metrics, warnings: model.warnings,
+    params: model.params, groups: model.groups, overrides: model.overrides,
+    metrics: model.metrics, warnings: model.warnings,
     printOrientation: 'All STL files are centered in XY, rest on Z=0, and use millimeters. Lid top face rests on the bed; its locating skirt faces up.',
     printNotes: 'Import individual STL files into Bambu Studio as separate objects, then arrange and slice. Check bed dimensions. Export contains geometry only, no filament or printer profile. Fit clearance may need calibration for your printer and material.',
     parts: model.parts.map(part => ({ id: part.id, name: part.name, file: partFilename(part),
-      kind: part.kind, bounds: part.bounds, volumeMm3: part.volume, cells: part.cellIds,
+      kind: part.kind, bounds: part.bounds, dimensions: part.dimensions, volumeMm3: part.volume, cells: part.cellIds,
       assemblyPosition: part.assemblyPosition, assemblyRotation: part.assemblyRotation ?? [0, 0, 0] })),
   };
 }
@@ -76,16 +78,19 @@ export async function createKitZIP(model: ModelData): Promise<Blob> {
   const zip = new JSZip();
   for (const part of model.parts) zip.file(partFilename(part), serializeSTL(part));
   zip.file('manifest.json', JSON.stringify(createManifest(model), null, 2));
+  const design = createDesignFile({ params: model.params, groups: model.groups, overrides: model.overrides, locked: false });
+  zip.file('design.json', await design.blob.text());
   zip.file('README.txt', [
     'OpenBoxHub 参数化收纳盒',
     '所有 STL 使用毫米 (mm)，每个零件均独立、平放于 Z=0。',
     '在 Bambu Studio 中导入 STL 作为独立对象，自动摆盘并检查打印机平台尺寸后切片。',
     '盖子已按顶板朝下、裙边朝上导出。不要按装配展示的朝向打印盖子。',
     'STL 不保存单位和打印配置；导入时使用毫米，不缩放。',
-    '内盒单边间隙等于 gap；相邻内盒之间间隙为 2×gap。',
+    '默认内盒单边间隙为 gap，相邻内盒间隙为 2×gap；独立调整尺寸后以实际几何为准。',
     '所有盖型统一为内盒预留 lidDepth + lidClearance 高度，便于换盖。',
     '实际配合受材料、机器和切片影响，建议先打印一套小尺寸校准件。',
-    `参数与零件装配变换见 manifest.json；外盒 ${model.params.width} × ${model.params.depth} × ${model.params.height} mm。`,
+    '在 OpenBoxHub 中导入 design.json 可恢复参数、内盒合并分组和独立尺寸；也支持导入 manifest.json。',
+    `零件尺寸与装配变换见 manifest.json；外盒 ${model.params.width} × ${model.params.depth} × ${model.params.height} mm。`,
   ].join('\n'));
   return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
 }

@@ -68,7 +68,7 @@ export default function Scene(props: Props) {
     scene.add(grid)
     function fit(view: string) {
       const p = live.current.params
-      const span = Math.max(p.width, p.depth, p.height * 1.7)
+      const span = Math.max(p.width, p.depth, p.height * 1.7, ...(live.current.model?.parts.map(part => Math.max(...part.bounds)) ?? []))
       const aspectCorrection = Math.max(1, 1 / camera.aspect)
       const scale = span * aspectCorrection
       controls.maxDistance = Math.max(2200, scale * 7)
@@ -94,6 +94,7 @@ export default function Scene(props: Props) {
     const raycaster = new THREE.Raycaster()
     const pointerDown = (e: PointerEvent) => down.set(e.clientX, e.clientY)
     const pointerUp = (e: PointerEvent) => {
+      if (e.button !== 0) return
       if (down.distanceTo(new THREE.Vector2(e.clientX, e.clientY)) > 5) return
       const rect = renderer.domElement.getBoundingClientRect()
       raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -(e.clientY - rect.top) / rect.height * 2 + 1), camera)

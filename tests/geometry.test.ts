@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Module from 'manifold-3d';
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
-import { buildModel, isConnectedGroup, validateParams } from '../src/geometry';
+import { buildModel, isConnectedGroup, validateOverrides, validateParams } from '../src/geometry';
 import { createExportFile, createKitZIP, layoutPrintPlate, serializeSTL } from '../src/export';
-import { DEFAULT_PARAMS, defaultGroups } from '../src/types';
+import { DEFAULT_PARAMS, defaultGroups, partOverrideKey } from '../src/types';
 import type { PartData, Params } from '../src/types';
 import JSZip from 'jszip';
 
@@ -253,4 +253,101 @@ test('Float32-exported meshes have no collapsed faces at thin-wall and large-siz
     const result = buildModel(module, { ...DEFAULT_PARAMS, ...patch });
     result.parts.forEach(checkMesh);
   }
+});
+
+test('one insert can change all five dimensions without changing its siblings or assembly center', () => {
+  const original = buildModel(module, DEFAULT_PARAMS);
+  const before = original.parts[1];
+  const dimensions = { width: before.bounds[0] - 4, depth: before.bounds[1] - 3, height: 15, wall: 1.4, bottom: 1.2 };
+  const overrides = { [partOverrideKey([0])]: dimensions };
+  const result = buildModel(module, DEFAULT_PARAMS, undefined, overrides);
+  const changed = result.parts[1];
+  result.parts.forEach(checkMesh); checkAssembly(result.parts);
+  for (const key of ['width', 'depth', 'height', 'wall', 'bottom'] as const) close(changed.dimensions[key], dimensions[key]);
+  changed.assemblyPosition.forEach((n, axis) => close(n, before.assemblyPosition[axis]));
+  for (const part of result.parts.filter(part => part.id !== changed.id)) {
+    const previous = original.parts.find(other => part.id === other.id)!;
+    assert.deepEqual(part.positions, previous.positions);
+    assert.deepEqual(part.indices, previous.indices);
+  }
+  const solid = assembled(changed);
+  const wallSection = solid.slice(DEFAULT_PARAMS.bottom + dimensions.bottom + 0.5);
+  const bottomSection = solid.slice(DEFAULT_PARAMS.bottom + dimensions.bottom - 0.1);
+  try {
+    const widths = wallSection.toPolygons().map(polygon => Math.max(...polygon.map(p => p[0])) - Math.min(...polygon.map(p => p[0]))).sort((a, b) => b - a);
+    close((widths[0] - widths[1]) / 2, dimensions.wall);
+    assert.equal(bottomSection.numContour(), 1);
+    assert.equal(wallSection.numContour(), 2);
+  } finally { wallSection.delete(); bottomSection.delete(); solid.delete(); }
+  const requestedWidth = dimensions.width;
+  overrides[partOverrideKey([0])].width = 5;
+  close(result.overrides[partOverrideKey([0])].width!, requestedWidth);
+});
+
+test('merged L dimensions describe the bounding rectangle and customizations follow cell membership', () => {
+  const groups = [[0, 1, 3], [2], [4], [5]];
+  const original = buildModel(module, DEFAULT_PARAMS, groups);
+  const key = partOverrideKey([3, 0, 1]);
+  assert.equal(key, partOverrideKey([0, 1, 3]));
+  const size = { width: original.parts[1].bounds[0] * 0.85, depth: original.parts[1].bounds[1] * 0.9, height: 14, wall: 1.2, bottom: 1.1 };
+  const result = buildModel(module, DEFAULT_PARAMS, [[2], [3, 0, 1], [4], [5]], { [key]: size });
+  const changed = result.parts.find(part => part.overrideKey === key)!;
+  assert.equal(changed.id, 'inner-2'); assert.equal(changed.isRectangular, false);
+  close(changed.bounds[0], size.width); close(changed.bounds[1], size.depth); close(changed.bounds[2], size.height);
+  result.parts.forEach(checkMesh); checkAssembly(result.parts);
+  const shape = assembled(changed), base = shape.slice(DEFAULT_PARAMS.bottom + size.bottom / 2);
+  try {
+    assert.equal(base.numContour(), 1);
+    assert.ok(base.area() < size.width * size.depth * 0.85, 'the missing L corner must remain empty');
+  } finally { base.delete(); shape.delete(); }
+});
+
+test('lid dimensions and skirt thickness are independent of the outer box and inserts', () => {
+  for (const lidType of ['sleeve', 'inset'] as const) {
+    const params = { ...DEFAULT_PARAMS, lidType };
+    const original = buildModel(module, params);
+    const before = original.parts.at(-1)!;
+    const size = {
+      width: before.bounds[0] + (lidType === 'sleeve' ? 1 : -0.5),
+      depth: before.bounds[1] + (lidType === 'sleeve' ? 2 : -0.5),
+      height: 4.2, wall: 2.2, bottom: 1.8,
+    };
+    const result = buildModel(module, params, undefined, { lid: size });
+    result.parts.forEach(checkMesh); checkAssembly(result.parts);
+    const lid = result.parts.at(-1)!;
+    for (const key of ['width', 'depth', 'height', 'wall', 'bottom'] as const) close(lid.dimensions[key], size[key]);
+    close(lid.assemblyPosition[2], params.height + size.bottom);
+    for (let i = 0; i < original.parts.length - 1; i++) {
+      assert.deepEqual(result.parts[i].positions, original.parts[i].positions);
+      assert.deepEqual(result.parts[i].indices, original.parts[i].indices);
+    }
+  }
+});
+
+test('independent dimensions reject outer-boundary, neighboring-insert and lid interference', () => {
+  const original = buildModel(module, DEFAULT_PARAMS);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:0': { width: original.parts[1].bounds[0] + 2 } }), /超出外盒/);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:1': { width: original.parts[2].bounds[0] + 2 } }), /相交/);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:0': { height: 21 } }), /可用高度/);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { lid: { width: 145 } }), /无法套入/);
+  assert.throws(() => buildModel(module, { ...DEFAULT_PARAMS, lidType: 'inset' }, undefined, { lid: { height: 6 } }), /与内盒.*相交/);
+  const ringParams = { ...DEFAULT_PARAMS, rows: 3, cols: 3 };
+  const groups = [[0, 1, 2, 3, 5, 6, 7, 8], [4]];
+  const ring = buildModel(module, ringParams, groups).parts[1];
+  assert.throws(() => buildModel(module, ringParams, groups, { [partOverrideKey(groups[0])]: { width: ring.bounds[0] * 0.8 } }), /相交/);
+});
+
+test('runtime override validation rejects unknown parts, unsupported fields and invalid numerical values', () => {
+  const groups = defaultGroups(2, 3);
+  for (const overrides of [
+    { outer: { width: 100 } }, { 'inner:5,4': { height: 10 } }, { lid: { width: Infinity } },
+    { 'inner:0': { wall: 0.1 } }, { 'inner:0': { bottom: 11 } }, { lid: { wall: 0.1 } },
+    { 'inner:0': { height: NaN } }, { lid: { unknown: 2 } }, { 'inner:0': null },
+  ]) {
+    assert.ok(validateOverrides(DEFAULT_PARAMS, groups, overrides as never).length > 0);
+    assert.throws(() => buildModel(module, DEFAULT_PARAMS, groups, overrides as never));
+  }
+  const noLid = buildModel(module, { ...DEFAULT_PARAMS, lidType: 'none' }, groups, { lid: { wall: 1.5 } });
+  assert.deepEqual(noLid.overrides, { lid: { wall: 1.5 } });
+  assert.equal(noLid.parts.some(part => part.kind === 'lid'), false);
 });
