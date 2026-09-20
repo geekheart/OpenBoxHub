@@ -3,9 +3,9 @@
   "version": 1,
   "units": "mm",
   "params": {
-    "width": 145.4,
-    "depth": 111.2,
-    "height": 24,
+    "width": 200,
+    "depth": 140,
+    "height": 40,
     "wall": 2,
     "bottom": 2,
     "radius": 5,

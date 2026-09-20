@@ -56,7 +56,7 @@ export default function App() {
   const [visible, setVisible] = useState({ outer: true, inner: true, lid: true })
   const [transparent, setTransparent] = useState(false)
   const [autoRotate, setAutoRotate] = useState(false)
-  const [fullScreen, setFullScreen] = useState(true)
+  const [fullScreen, setFullScreen] = useState(false)
   const [cameraView, setCameraView] = useState<CameraView>({ name: 'iso', tick: 0 })
   const [selected, setSelected] = useState<string | null>(null)
   const [selection, setSelection] = useState<number[]>([])
@@ -230,7 +230,6 @@ export default function App() {
   return <div className="app-shell">
     <header className="app-header">
       <a className="brand" href="./" aria-label="OpenBoxHub 首页"><span className="brand-icon"><Box size={24} strokeWidth={1.6} /></span><span>OpenBox<em>Hub</em><span className="brand-sub">参数化收纳盒工坊</span></span></a>
-      <div className="project-title"><span className="project-dot" />未命名设计 <span className="project-badge">本地工作台</span></div>
       <div className="header-actions"><button className="text-button design-file-button" aria-label="参数文件" onClick={() => { setImportError(''); setModal('design') }}><FileJson size={16} /><span>参数文件</span></button><button className="icon-button" aria-label="使用帮助" onClick={() => setModal('help')}><CircleHelp size={19} /></button><span className="header-divider" /><button className="primary-button export-main" disabled={!model || busy || !!error} onClick={() => { setExportTarget('kit'); setModal('export') }}><ArrowDownToLine size={17} />导出 STL<ChevronDown size={14} /></button></div>
     </header>
 

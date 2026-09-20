@@ -2,8 +2,10 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { ModelData, PartData, Params } from './types'
+import { advanceMotion, sampleMotion, pathLength, type MotionCursor, type MotionPlan } from './motion'
+import type { ViewMode } from './motion'
 
-export type ViewMode = 'assembly' | 'open' | 'exploded'
+export type { ViewMode } from './motion'
 export type CameraView = { name: 'iso' | 'top' | 'front'; tick: number }
 export const INNER_COLORS = ['#d4dcca', '#d5c2aa', '#aebfc4', '#c5bbcf', '#d8c8a0', '#b4c8b4', '#c7b5aa', '#b3c8d1']
 type Props = {
@@ -12,13 +14,13 @@ type Props = {
   selected: string | null; onSelect: (id: string | null) => void
   cameraView: CameraView; autoRotate: boolean; onError: (message: string) => void
 }
-type RenderPart = { data: PartData; mesh: THREE.Mesh; line: THREE.LineSegments; target: THREE.Vector3 }
+type RenderPart = { data: PartData; mesh: THREE.Mesh; line: THREE.LineSegments }
 
 export default function Scene(props: Props) {
   const host = useRef<HTMLDivElement>(null)
   const live = useRef(props)
   live.current = props
-  const runtime = useRef<{ scene: THREE.Scene; renderer: THREE.WebGLRenderer; camera: THREE.PerspectiveCamera; controls: OrbitControls; parts: RenderPart[]; grid: THREE.GridHelper; plane: THREE.Mesh; fit: (view: string) => void } | null>(null)
+  const runtime = useRef<{ scene: THREE.Scene; renderer: THREE.WebGLRenderer; camera: THREE.PerspectiveCamera; controls: OrbitControls; parts: RenderPart[]; plan: MotionPlan | null; cursor: MotionCursor; grid: THREE.GridHelper; plane: THREE.Mesh; fit: (view: string) => void } | null>(null)
 
   useEffect(() => {
     const container = host.current!
@@ -68,20 +70,43 @@ export default function Scene(props: Props) {
     scene.add(grid)
     function fit(view: string) {
       const p = live.current.params
-      const span = Math.max(p.width, p.depth, p.height * 1.7, ...(live.current.model?.parts.map(part => Math.max(...part.bounds)) ?? []))
+      const model = live.current.model
+      const plan = model?.motion
+      const branch = live.current.mode === 'exploded' ? 'exploded' : 'open'
+      const offsets = plan ? sampleMotion(plan, { branch, distance: live.current.mode === 'assembly' ? 0 : pathLength(plan[branch]) }) : null
+      const box = new THREE.Box3()
+      model?.parts.forEach((part, i) => {
+        const position = new THREE.Vector3(...part.assemblyPosition).add(new THREE.Vector3(...(offsets?.[i] ?? [0, 0, 0])))
+        const local = new THREE.Box3(new THREE.Vector3(-part.bounds[0] / 2, -part.bounds[1] / 2, 0), new THREE.Vector3(part.bounds[0] / 2, part.bounds[1] / 2, part.bounds[2]))
+        const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(...(part.assemblyRotation ?? [0, 0, 0])))
+        box.union(local.applyMatrix4(new THREE.Matrix4().compose(position, rotation, new THREE.Vector3(1, 1, 1))))
+      })
+      const extent = box.isEmpty() ? new THREE.Vector3(p.width, p.depth, p.height) : box.getSize(new THREE.Vector3())
+      const span = Math.max(extent.x, extent.y, extent.z * 1.25)
       const aspectCorrection = Math.max(1, 1 / camera.aspect)
       const scale = span * aspectCorrection
       controls.maxDistance = Math.max(2200, scale * 7)
       camera.far = Math.max(8000, scale * 15)
       camera.updateProjectionMatrix()
-      const center = new THREE.Vector3(0, p.depth * 0.05, p.height * 0.8)
+      const center = box.isEmpty() ? new THREE.Vector3(0, p.depth * 0.05, p.height * 0.8) : box.getCenter(new THREE.Vector3())
       controls.target.copy(center)
-      if (view === 'top') camera.position.set(0, -0.01, center.z + scale * 2.8)
-      else if (view === 'front') camera.position.set(0, -scale * 3, p.height * 0.65)
-      else camera.position.set(scale * 1.45, -scale * 1.82, scale * 1.66)
+      const direction = (view === 'top' ? new THREE.Vector3(0, -0.0001, 1)
+        : view === 'front' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(1.45, -1.82, 1.66)).normalize()
+      const right = new THREE.Vector3().crossVectors(camera.up, direction).normalize()
+      const up = new THREE.Vector3().crossVectors(direction, right)
+      const tanVertical = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 0.82
+      const tanHorizontal = tanVertical * camera.aspect
+      let distance = 35
+      for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) {
+        const corner = new THREE.Vector3(x * extent.x / 2, y * extent.y / 2, z * extent.z / 2)
+        const depth = corner.dot(direction)
+        distance = Math.max(distance, Math.abs(corner.dot(right)) / tanHorizontal + depth,
+          Math.abs(corner.dot(up)) / tanVertical + depth)
+      }
+      camera.position.copy(center).addScaledVector(direction, distance)
       camera.lookAt(center); controls.update()
     }
-    runtime.current = { scene, renderer, camera, controls, parts: [], grid, plane, fit }
+    runtime.current = { scene, renderer, camera, controls, parts: [], plan: null, cursor: { branch: 'open', distance: 0 }, grid, plane, fit }
     const resize = new ResizeObserver(() => {
       const w = container.clientWidth, h = container.clientHeight
       if (!w || !h) return
@@ -110,23 +135,14 @@ export default function Scene(props: Props) {
       const dt = Math.min((now - prior) / 1000, 0.05); prior = now
       const rt = runtime.current
       if (!rt) return
-      const { mode, explosion, visible, params, selected, transparent, autoRotate } = live.current
+      const { mode, explosion, visible, selected, transparent, autoRotate } = live.current
       const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      for (const part of rt.parts) {
-        const { data, mesh, line, target } = part
-        target.fromArray(data.assemblyPosition)
-        if (mode === 'open' && data.kind === 'lid') {
-          target.y += params.depth * 0.68; target.z += Math.max(28, params.height * 0.85)
-        }
-        if (mode === 'exploded') {
-          const a = explosion / 100
-          if (data.kind === 'inner') {
-            target.x *= 1 + a * 0.75; target.y *= 1 + a * 0.75
-            target.z += (params.height * 1.15 + 18) * a
-          }
-          if (data.kind === 'lid') target.z += (params.height * 2.25 + 45) * a
-        }
-        mesh.position.lerp(target, reduceMotion ? 1 : 1 - Math.exp(-dt * 10))
+      if (rt.plan) rt.cursor = advanceMotion(rt.plan, rt.cursor, mode, explosion, dt, reduceMotion)
+      const offsets = rt.plan ? sampleMotion(rt.plan, rt.cursor) : null
+      for (let i = 0; i < rt.parts.length; i++) {
+        const { data, mesh, line } = rt.parts[i]
+        const offset = offsets?.[i] ?? [0, 0, 0]
+        mesh.position.set(data.assemblyPosition[0] + offset[0], data.assemblyPosition[1] + offset[1], data.assemblyPosition[2] + offset[2])
         line.position.copy(mesh.position)
         mesh.visible = visible[data.kind]; line.visible = mesh.visible
         const mat = mesh.material as THREE.MeshStandardMaterial
@@ -180,10 +196,13 @@ export default function Scene(props: Props) {
       const line = new THREE.LineSegments(new THREE.EdgesGeometry(indexed, 32), new THREE.LineBasicMaterial({ color: '#324a39', transparent: true, opacity: 0.13 }))
       line.position.copy(mesh.position); line.rotation.copy(mesh.rotation)
       indexed.dispose(); rt.scene.add(mesh, line)
-      return { data, mesh, line, target: mesh.position.clone() }
+      return { data, mesh, line }
     })
+    rt.plan = props.model.motion ?? null
+    rt.cursor = { branch: 'open', distance: 0 }
+    rt.fit(props.cameraView.name)
   }, [props.model])
 
-  useEffect(() => { runtime.current?.fit(props.cameraView.name) }, [props.cameraView])
+  useEffect(() => { runtime.current?.fit(props.cameraView.name) }, [props.cameraView, props.mode])
   return <div className="three-scene" ref={host} />
 }

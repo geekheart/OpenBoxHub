@@ -2,11 +2,11 @@
   "format": "openboxhub-parametric-kit",
   "version": 1,
   "units": "mm",
-  "generatedAt": "2026-09-20T07:03:00.690Z",
+  "generatedAt": "2026-09-20T07:21:27.624Z",
   "params": {
-    "width": 145.4,
-    "depth": 111.2,
-    "height": 24,
+    "width": 200,
+    "depth": 140,
+    "height": 40,
     "wall": 2,
     "bottom": 2,
     "radius": 5,
@@ -47,13 +47,13 @@
   ],
   "overrides": {},
   "metrics": {
-    "innerWidth": 141.4,
-    "innerDepth": 107.2,
-    "innerHeight": 18.75,
-    "cellWidth": 47.13333333333333,
-    "cellDepth": 53.6,
+    "innerWidth": 196,
+    "innerDepth": 136,
+    "innerHeight": 34.75,
+    "cellWidth": 65.33333333333333,
+    "cellDepth": 68,
     "insertCount": 6,
-    "totalVolume": 118639.44647532482,
+    "totalVolume": 233428.9144156871,
     "triangleCount": 2880,
     "holeCount": 0
   },
@@ -67,18 +67,18 @@
       "file": "outer_box.stl",
       "kind": "outer",
       "bounds": [
-        145.4,
-        111.2,
-        24
+        200,
+        140,
+        40
       ],
       "dimensions": {
-        "width": 145.4,
-        "depth": 111.2,
-        "height": 24,
+        "width": 200,
+        "depth": 140,
+        "height": 40,
         "wall": 2,
         "bottom": 2
       },
-      "volumeMm3": 54219.65885711613,
+      "volumeMm3": 106505.59112299839,
       "assemblyPosition": [
         0,
         0,
@@ -96,24 +96,24 @@
       "file": "insert_01.stl",
       "kind": "inner",
       "bounds": [
-        46.43333333000001,
-        52.9,
-        18.75
+        64.63333334000001,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.43333333000001,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333334000001,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5893.632541765586,
+      "volumeMm3": 13087.429535986357,
       "cells": [
         0
       ],
       "assemblyPosition": [
-        -47.133333335,
-        26.8,
+        -65.33333333,
+        34,
         2
       ],
       "assemblyRotation": [
@@ -128,24 +128,24 @@
       "file": "insert_02.stl",
       "kind": "inner",
       "bounds": [
-        46.433333340000004,
-        52.9,
-        18.75
+        64.63333332,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.433333340000004,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333332,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5911.6568816121435,
+      "volumeMm3": 13120.315055204614,
       "cells": [
         1
       ],
       "assemblyPosition": [
         0,
-        26.8,
+        34,
         2
       ],
       "assemblyRotation": [
@@ -160,24 +160,24 @@
       "file": "insert_03.stl",
       "kind": "inner",
       "bounds": [
-        46.43333333000001,
-        52.9,
-        18.75
+        64.63333334000001,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.43333333000001,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333334000001,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5893.632541765586,
+      "volumeMm3": 13087.429535986355,
       "cells": [
         2
       ],
       "assemblyPosition": [
-        47.133333335,
-        26.8,
+        65.33333333,
+        34,
         2
       ],
       "assemblyRotation": [
@@ -192,24 +192,24 @@
       "file": "insert_04.stl",
       "kind": "inner",
       "bounds": [
-        46.43333333000001,
-        52.9,
-        18.75
+        64.63333334000001,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.43333333000001,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333334000001,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5893.632541765586,
+      "volumeMm3": 13087.429535986354,
       "cells": [
         3
       ],
       "assemblyPosition": [
-        -47.133333335,
-        -26.8,
+        -65.33333333,
+        -34,
         2
       ],
       "assemblyRotation": [
@@ -224,24 +224,24 @@
       "file": "insert_05.stl",
       "kind": "inner",
       "bounds": [
-        46.433333340000004,
-        52.9,
-        18.75
+        64.63333332,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.433333340000004,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333332,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5911.6568816121435,
+      "volumeMm3": 13120.315055204614,
       "cells": [
         4
       ],
       "assemblyPosition": [
         0,
-        -26.8,
+        -34,
         2
       ],
       "assemblyRotation": [
@@ -256,24 +256,24 @@
       "file": "insert_06.stl",
       "kind": "inner",
       "bounds": [
-        46.43333333000001,
-        52.9,
-        18.75
+        64.63333334000001,
+        67.30000000000001,
+        34.75
       ],
       "dimensions": {
-        "width": 46.43333333000001,
-        "depth": 52.9,
-        "height": 18.75,
+        "width": 64.63333334000001,
+        "depth": 67.30000000000001,
+        "height": 34.75,
         "wall": 1,
         "bottom": 1
       },
-      "volumeMm3": 5893.632541765586,
+      "volumeMm3": 13087.429535986357,
       "cells": [
         5
       ],
       "assemblyPosition": [
-        47.133333335,
-        -26.8,
+        65.33333333,
+        -34,
         2
       ],
       "assemblyRotation": [
@@ -288,22 +288,22 @@
       "file": "sleeve_lid.stl",
       "kind": "lid",
       "bounds": [
-        149.9,
-        115.7,
+        204.5,
+        144.5,
         4.5
       ],
       "dimensions": {
-        "width": 149.9,
-        "depth": 115.7,
+        "width": 204.5,
+        "depth": 144.5,
         "height": 4.5,
         "wall": 2,
         "bottom": 1.5
       },
-      "volumeMm3": 29021.943687922045,
+      "volumeMm3": 48332.97503833403,
       "assemblyPosition": [
         0,
         0,
-        25.5
+        41.5
       ],
       "assemblyRotation": [
         3.141592653589793,

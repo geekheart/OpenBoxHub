@@ -1,3 +1,5 @@
+import type { MotionPlan } from './motion';
+
 export type Vec3 = [number, number, number];
 export type LidType = 'none' | 'sleeve' | 'inset';
 export type BaseStyle = 'solid' | 'honeycomb' | 'circles' | 'grid' | 'slots';
@@ -75,9 +77,11 @@ export interface ModelData {
   parts: PartData[];
   metrics: ModelMetrics;
   warnings: string[];
+  /** Worker-certified display paths; never part of the printable geometry. */
+  motion?: MotionPlan;
 }
 export const DEFAULT_PARAMS: Params = {
-  width: 145.4, depth: 111.2, height: 24, wall: 2, bottom: 2, radius: 5,
+  width: 200, depth: 140, height: 40, wall: 2, bottom: 2, radius: 5,
   rows: 2, cols: 3, gap: 0.35, innerWall: 1, innerBottom: 1,
   lidType: 'sleeve', lidThickness: 1.5, lidDepth: 3, lidClearance: 0.25,
   baseStyle: 'solid', holeSize: 12, ribWidth: 1.6, holeMargin: 3, slotLength: 22,

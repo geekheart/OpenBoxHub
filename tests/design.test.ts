@@ -30,7 +30,7 @@ test('parameter downloads round-trip merged groups, lock state and independent d
   const before = buildModel(module, config.params, config.groups, config.overrides);
   const file = createDesignFile(config);
   assert.equal(file.blob.type, 'application/json');
-  assert.equal(file.filename, 'openboxhub_145.4x111.2x24.json');
+  assert.equal(file.filename, 'openboxhub_200x140x40.json');
   const text = await file.blob.text();
   assert.equal(JSON.parse(text).format, 'openboxhub-design');
   const restored = parseDesignFile(text);
@@ -95,13 +95,13 @@ test('invalid JSON, unsupported schema and non-millimeter units are rejected', (
 
 test('parameters require all dimensions, finite numeric values and valid options', () => {
   for (const patch of [
-    { width: '145.4' }, { height: null }, { cols: 2.5 }, { width: -1 }, { wall: 200 },
+    { width: '200' }, { height: null }, { cols: 2.5 }, { width: -1 }, { wall: 200 },
     { lidType: 'hinged' }, { baseStyle: 'unknown' }, { extraDimension: 2 },
   ]) assert.throws(() => parseDesignFile(JSON.stringify({ ...payload(), params: { ...DEFAULT_PARAMS, ...patch } })));
   const parameters = { ...DEFAULT_PARAMS } as Record<string, unknown>;
   delete parameters.holeSize;
   assert.throws(() => parseDesignFile(JSON.stringify({ ...payload(), params: parameters })), /缺少 holeSize/);
-  const infinite = JSON.stringify(payload()).replace('145.4', '1e999');
+  const infinite = JSON.stringify(payload()).replace(`"width":${DEFAULT_PARAMS.width}`, '"width":1e999');
   assert.throws(() => parseDesignFile(infinite), /有限数字/);
 });
 

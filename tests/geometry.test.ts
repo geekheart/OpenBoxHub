@@ -98,11 +98,11 @@ test('default independent boxes are watertight, outward oriented, dimensionally 
   assert.equal(result.parts.length, 8);
   result.parts.forEach(checkMesh); checkAssembly(result.parts);
   const outer = result.parts[0];
-  outer.bounds.forEach((v, i) => close(v, [145.4, 111.2, 24][i]));
-  close(result.metrics.innerWidth, 141.4); close(result.metrics.innerDepth, 107.2);
-  close(result.metrics.innerHeight, 18.75);
+  outer.bounds.forEach((v, i) => close(v, [200, 140, 40][i]));
+  close(result.metrics.innerWidth, 196); close(result.metrics.innerDepth, 136);
+  close(result.metrics.innerHeight, 34.75);
   const lid = result.parts.find(p => p.kind === 'lid')!;
-  close(lid.bounds[0], 149.9); close(lid.bounds[1], 115.7); close(lid.bounds[2], 4.5);
+  close(lid.bounds[0], 204.5); close(lid.bounds[1], 144.5); close(lid.bounds[2], 4.5);
 });
 
 test('L-shaped merging removes internal boundaries and preserves a single hollow, collision-free insert', () => {
@@ -156,7 +156,7 @@ test('validates ranges and rejects missing, repeated, or diagonally connected gr
     assert.ok(validateParams(DEFAULT_PARAMS, groups).length > 0);
     assert.throws(() => buildModel(module, DEFAULT_PARAMS, groups));
   }
-  for (const patch of [{ width: NaN }, { rows: 2.5 }, { gap: 0 }, { height: 8, lidDepth: 6 }, { radius: 60 }, { cols: 12, width: 20 }, { lidThickness: 1e20 }])
+  for (const patch of [{ width: NaN }, { rows: 2.5 }, { gap: 0 }, { height: 8, lidDepth: 6 }, { radius: Math.min(DEFAULT_PARAMS.width, DEFAULT_PARAMS.depth) / 2 }, { cols: 12, width: 20 }, { lidThickness: 1e20 }])
     assert.ok(validateParams({ ...DEFAULT_PARAMS, ...patch }).length > 0);
 });
 
@@ -328,8 +328,8 @@ test('independent dimensions reject outer-boundary, neighboring-insert and lid i
   const original = buildModel(module, DEFAULT_PARAMS);
   assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:0': { width: original.parts[1].bounds[0] + 2 } }), /超出外盒/);
   assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:1': { width: original.parts[2].bounds[0] + 2 } }), /相交/);
-  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:0': { height: 21 } }), /可用高度/);
-  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { lid: { width: 145 } }), /无法套入/);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { 'inner:0': { height: original.metrics.innerHeight + 0.1 } }), /可用高度/);
+  assert.throws(() => buildModel(module, DEFAULT_PARAMS, undefined, { lid: { width: DEFAULT_PARAMS.width } }), /无法套入/);
   assert.throws(() => buildModel(module, { ...DEFAULT_PARAMS, lidType: 'inset' }, undefined, { lid: { height: 6 } }), /与内盒.*相交/);
   const ringParams = { ...DEFAULT_PARAMS, rows: 3, cols: 3 };
   const groups = [[0, 1, 2, 3, 5, 6, 7, 8], [4]];
