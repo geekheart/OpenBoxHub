@@ -1,0 +1,206 @@
+{
+  "format": "openboxhub-parametric-kit",
+  "version": 1,
+  "units": "mm",
+  "generatedAt": "2026-09-20T06:20:24.473Z",
+  "params": {
+    "width": 145.4,
+    "depth": 111.2,
+    "height": 24,
+    "wall": 2,
+    "bottom": 2,
+    "radius": 5,
+    "rows": 2,
+    "cols": 3,
+    "gap": 0.35,
+    "innerWall": 1,
+    "innerBottom": 1,
+    "lidType": "inset",
+    "lidThickness": 1.5,
+    "lidDepth": 3,
+    "lidClearance": 0.25,
+    "baseStyle": "solid",
+    "holeSize": 12,
+    "ribWidth": 1.6,
+    "holeMargin": 3,
+    "slotLength": 22
+  },
+  "groups": [
+    [
+      0,
+      1,
+      3
+    ],
+    [
+      2
+    ],
+    [
+      4
+    ],
+    [
+      5
+    ]
+  ],
+  "metrics": {
+    "innerWidth": 141.4,
+    "innerDepth": 107.2,
+    "innerHeight": 18.75,
+    "cellWidth": 47.13333333333333,
+    "cellDepth": 53.6,
+    "insertCount": 4,
+    "totalVolume": 113471.27083185904,
+    "triangleCount": 2188,
+    "holeCount": 0
+  },
+  "warnings": [],
+  "printOrientation": "All STL files are centered in XY, rest on Z=0, and use millimeters. Lid top face rests on the bed; its locating skirt faces up.",
+  "printNotes": "Import individual STL files into Bambu Studio as separate objects, then arrange and slice. Check bed dimensions. Export contains geometry only, no filament or printer profile. Fit clearance may need calibration for your printer and material.",
+  "parts": [
+    {
+      "id": "outer",
+      "name": "外盒",
+      "file": "outer_box.stl",
+      "kind": "outer",
+      "bounds": [
+        145.4,
+        111.2,
+        24
+      ],
+      "volumeMm3": 54219.65885711613,
+      "assemblyPosition": [
+        0,
+        0,
+        0
+      ],
+      "assemblyRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "inner-1",
+      "name": "内盒 01",
+      "file": "insert_01.stl",
+      "kind": "inner",
+      "bounds": [
+        93.56666667000002,
+        106.5,
+        18.75
+      ],
+      "volumeMm3": 14427.347136255341,
+      "cells": [
+        0,
+        1,
+        3
+      ],
+      "assemblyPosition": [
+        -23.566666665000003,
+        0,
+        2
+      ],
+      "assemblyRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "inner-2",
+      "name": "内盒 02",
+      "file": "insert_02.stl",
+      "kind": "inner",
+      "bounds": [
+        46.43333333000001,
+        52.9,
+        18.75
+      ],
+      "volumeMm3": 5893.632541765586,
+      "cells": [
+        2
+      ],
+      "assemblyPosition": [
+        47.133333335,
+        26.8,
+        2
+      ],
+      "assemblyRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "inner-3",
+      "name": "内盒 03",
+      "file": "insert_03.stl",
+      "kind": "inner",
+      "bounds": [
+        46.433333340000004,
+        52.9,
+        18.75
+      ],
+      "volumeMm3": 5911.6568816121435,
+      "cells": [
+        4
+      ],
+      "assemblyPosition": [
+        0,
+        -26.8,
+        2
+      ],
+      "assemblyRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "inner-4",
+      "name": "内盒 04",
+      "file": "insert_04.stl",
+      "kind": "inner",
+      "bounds": [
+        46.43333333000001,
+        52.9,
+        18.75
+      ],
+      "volumeMm3": 5893.632541765586,
+      "cells": [
+        5
+      ],
+      "assemblyPosition": [
+        47.133333335,
+        -26.8,
+        2
+      ],
+      "assemblyRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "lid",
+      "name": "内嵌定位盖",
+      "file": "inset_lid.stl",
+      "kind": "lid",
+      "bounds": [
+        145.4,
+        111.2,
+        4.5
+      ],
+      "volumeMm3": 27125.342873344256,
+      "assemblyPosition": [
+        0,
+        0,
+        25.5
+      ],
+      "assemblyRotation": [
+        3.141592653589793,
+        0,
+        0
+      ]
+    }
+  ]
+}

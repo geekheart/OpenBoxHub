@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+test-results/
+exports/
+
+# Original reference models stay local; derived measurements are documented.
+/*.3mf
+
+.pnpm-store/
