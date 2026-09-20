@@ -14,6 +14,10 @@ export interface MotionPlan {
   exploded: MotionPath
   /** Both branches have exactly the same vertical lid-release prefix. */
   junction: number
+  /** Insert elevation levels parallel to model.parts; outer box and lid use -1. */
+  layers: number[]
+  /** Number of occupied insert levels; ordinary independent grids use one. */
+  layerCount: number
   spreadScale: number
   speed: number
 }
@@ -34,48 +38,105 @@ export const pathLength = (p: MotionPath): number => p.distances[p.distances.len
 export function createMotionPlan(module: ManifoldToplevel, model: ModelData): MotionPlan {
   const { parts, params } = model
   const zero = parts.map((): Vec3 => [0, 0, 0])
-  const raisedLid = clone(zero), raisedInserts = clone(zero)
-  const inners = parts.filter(p => p.kind === 'inner')
+  const innerIndices = parts.flatMap((part, index) => part.kind === 'inner' ? [index] : [])
   const clearance = Math.max(18, Math.min(params.width, params.depth) * 0.15)
   const insertLift = Math.max(0, params.height + clearance - params.bottom)
-  const insertTop = Math.max(params.height, ...inners.map(p => p.assemblyPosition[2] + p.bounds[2] + insertLift))
+  const minimumBottom = Math.min(params.bottom, ...innerIndices.map(index => parts[index].assemblyPosition[2]))
+  const maximumTop = Math.max(params.bottom, ...innerIndices.map(index => parts[index].assemblyPosition[2] + parts[index].bounds[2]))
+  const layerPitch = maximumTop - minimumBottom + clearance
   const lidIndex = parts.findIndex(p => p.kind === 'lid')
-  if (lidIndex >= 0) {
-    const lid = parts[lidIndex]
-    const lidBottom = lid.assemblyPosition[2] - lid.bounds[2]
-    raisedLid[lidIndex][2] = Math.max(28, params.height * 0.85, insertTop + clearance - lidBottom)
+  const lidLift = (insertTop: number): number => lidIndex < 0 ? 0 : Math.max(28, params.height * 0.85,
+    insertTop + clearance - (parts[lidIndex].assemblyPosition[2] - parts[lidIndex].bounds[2]))
+
+  // Closed grid contours deserve a visible higher level even when a centered
+  // insert has zero radial travel and therefore produces no horizontal collision.
+  const higherThan = new Map(innerIndices.map(index => [index, new Set<number>()]))
+  const { rows, cols } = params
+  const neighbors = (cell: number): number[] => {
+    const row = Math.floor(cell / cols), col = cell % cols
+    return [row > 0 ? cell - cols : -1, row + 1 < rows ? cell + cols : -1,
+      col > 0 ? cell - 1 : -1, col + 1 < cols ? cell + 1 : -1].filter(value => value >= 0)
   }
-  for (let i = 0; i < parts.length; i++) {
-    raisedInserts[i] = [...raisedLid[i]]
-    if (parts[i].kind === 'inner') raisedInserts[i][2] = insertLift
+  for (const container of innerIndices) {
+    const occupied = new Set(parts[container].cellIds ?? [])
+    if (!occupied.size) continue
+    const outside = new Set<number>(), queue: number[] = []
+    for (let cell = 0; cell < rows * cols; cell++) {
+      const row = Math.floor(cell / cols), col = cell % cols
+      if ((row === 0 || row === rows - 1 || col === 0 || col === cols - 1) && !occupied.has(cell)) {
+        outside.add(cell); queue.push(cell)
+      }
+    }
+    for (let n = 0; n < queue.length; n++) for (const next of neighbors(queue[n])) {
+      if (!occupied.has(next) && !outside.has(next)) { outside.add(next); queue.push(next) }
+    }
+    for (const contained of innerIndices) {
+      if (contained === container) continue
+      const cells = parts[contained].cellIds ?? []
+      if (cells.length && cells.every(cell => !occupied.has(cell) && !outside.has(cell))) higherThan.get(container)!.add(contained)
+    }
   }
-  const opened = clone(raisedLid)
-  if (lidIndex >= 0) opened[lidIndex][1] = params.depth * 0.68
-  const spread = (scale: number) => raisedInserts.map((offset, i): Vec3 => parts[i].kind === 'inner'
-    ? [parts[i].assemblyPosition[0] * 1.1 * scale, parts[i].assemblyPosition[1] * 1.1 * scale, offset[2]]
-    : [...offset])
+
+  const assignLayers = (): number[] => {
+    const levels: number[] = parts.map(part => part.kind === 'inner' ? 0 : -1)
+    const indegree = new Map(innerIndices.map(index => [index, 0]))
+    for (const children of higherThan.values()) for (const child of children) indegree.set(child, indegree.get(child)! + 1)
+    const queue = innerIndices.filter(index => indegree.get(index) === 0)
+    for (let n = 0; n < queue.length; n++) for (const child of higherThan.get(queue[n])!) {
+      levels[child] = Math.max(levels[child], levels[queue[n]] + 1)
+      indegree.set(child, indegree.get(child)! - 1)
+      if (indegree.get(child) === 0) queue.push(child)
+    }
+    if (queue.length !== innerIndices.length) throw new Error('内盒层级形成循环，无法生成安全的展开路径。')
+    return levels
+  }
+  const lifted = (layers: number[], coverLift: number): MotionOffsets => parts.map((part, index): Vec3 =>
+    [0, 0, part.kind === 'inner' ? insertLift + layers[index] * layerPitch : part.kind === 'lid' ? coverLift : 0])
+  const spread = (from: MotionOffsets): MotionOffsets => from.map((offset, index): Vec3 => parts[index].kind === 'inner'
+    ? [parts[index].assemblyPosition[0] * 1.1, parts[index].assemblyPosition[1] * 1.1, offset[2]] : [...offset])
   const world = createCollisionWorld(module, parts)
-  let spreadScale = 1
   try {
-    const required = [[zero, zero], [zero, raisedLid], [raisedLid, raisedInserts], [raisedLid, opened]]
+    let layers = assignLayers()
+    // Temporarily park the cover above every possible layer while finding a
+    // conflict-free level assignment. Its final height is recomputed below.
+    const planningLidLift = lidLift(maximumTop + insertLift + Math.max(0, innerIndices.length - 1) * layerPitch)
+    for (;;) {
+      const from = lifted(layers, planningLidLift)
+      const collision = world.firstCollision(from, spread(from))
+      if (!collision) break
+      const { a, b } = collision
+      if (parts[a].kind !== 'inner' || parts[b].kind !== 'inner' || layers[a] !== layers[b])
+        throw new Error(`${parts[a].name}与${parts[b].name}无法通过分层安全展开，请调整零件尺寸。`)
+      const areaA = parts[a].bounds[0] * parts[a].bounds[1], areaB = parts[b].bounds[0] * parts[b].bounds[1]
+      const radiusA = Math.hypot(parts[a].assemblyPosition[0], parts[a].assemblyPosition[1])
+      const radiusB = Math.hypot(parts[b].assemblyPosition[0], parts[b].assemblyPosition[1])
+      // Keep a larger surrounding footprint low; equally sized parts nearer
+      // the center take the upper level. Equal-level constraints cannot cycle.
+      const raiseA = Math.abs(areaA - areaB) > 1e-6 ? areaA < areaB
+        : Math.abs(radiusA - radiusB) > 1e-6 ? radiusA < radiusB : a > b
+      higherThan.get(raiseA ? b : a)!.add(raiseA ? a : b)
+      layers = assignLayers()
+    }
+    const layerCount = innerIndices.length ? Math.max(...layers) + 1 : 0
+    const insertTop = Math.max(params.height, ...innerIndices.map(index =>
+      parts[index].assemblyPosition[2] + parts[index].bounds[2] + insertLift + layers[index] * layerPitch))
+    const raisedLid = clone(zero)
+    if (lidIndex >= 0) raisedLid[lidIndex][2] = lidLift(insertTop)
+    const raisedInserts = lifted(parts.map(part => part.kind === 'inner' ? 0 : -1), lidLift(insertTop))
+    const separated = lifted(layers, lidLift(insertTop))
+    const opened = clone(raisedLid)
+    if (lidIndex >= 0) opened[lidIndex][1] = params.depth * 0.68
+    const points = [zero, raisedLid, raisedInserts]
+    if (layerCount > 1) points.push(separated)
+    points.push(spread(separated))
+    const required: [MotionOffsets, MotionOffsets][] = [[zero, zero], [raisedLid, opened]]
+    for (let index = 1; index < points.length; index++) required.push([points[index - 1], points[index]])
     for (const [from, to] of required) {
       const collision = world.firstCollision(from, to)
       if (collision) throw new Error(`${parts[collision.a].name}与${parts[collision.b].name}的展示路径相交，请调整零件尺寸。`)
     }
-    if (world.firstCollision(raisedInserts, spread(1))) {
-      let low = 0, high = 1
-      for (let i = 0; i < 16; i++) {
-        const mid = (low + high) / 2
-        if (world.firstCollision(raisedInserts, spread(mid))) high = mid
-        else low = mid
-      }
-      // Retain a small margin before first contact, including numeric tolerance.
-      spreadScale = low * 0.98
-    }
-    const exploded = path([zero, raisedLid, raisedInserts, spread(spreadScale)])
-    if (world.firstCollision(raisedInserts, exploded.points[3])) throw new Error('无法生成安全的展开路径，请调整内盒布局。')
     const open = path([zero, raisedLid, opened])
-    return { open, exploded, junction: open.distances[1], spreadScale,
+    return { open, exploded: path(points), junction: open.distances[1], layers, layerCount, spreadScale: 1,
       speed: Math.max(150, Math.max(params.width, params.depth, params.height) * 1.8) }
   } finally { world.dispose() }
 }

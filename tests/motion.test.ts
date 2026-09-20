@@ -4,6 +4,8 @@ import Module from 'manifold-3d';
 import type { Manifold } from 'manifold-3d';
 import { buildModel } from '../src/geometry';
 import { serializeSTL } from '../src/export';
+import { serializeSTEP } from '../src/step';
+import { createCollisionWorld } from '../src/collision';
 import { advanceMotion, createMotionPlan, pathLength, sampleMotion } from '../src/motion';
 import type { MotionCursor, MotionOffsets, MotionPath, MotionPlan, ViewMode } from '../src/motion';
 import { DEFAULT_PARAMS, partOverrideKey } from '../src/types';
@@ -58,6 +60,7 @@ function segmentSamples(path: MotionPath): number[] {
 
 function checkPlan(model: ModelData, plan: MotionPlan): void {
   const oracle = collisionOracle(model);
+  const continuous = createCollisionWorld(module, model.parts);
   try {
     for (const branch of ['open', 'exploded'] as const) {
       const path = plan[branch];
@@ -72,6 +75,17 @@ function checkPlan(model: ModelData, plan: MotionPlan): void {
           }
         }));
         assert.ok(!(horizontal && vertical), `${branch} segment ${index} moves diagonally instead of lifting before spreading`);
+        assert.equal(continuous.firstCollision(path.points[index - 1], path.points[index]), null,
+          `${branch} segment ${index} has a collision between its sampled poses`);
+        assert.equal(continuous.firstCollision(path.points[index], path.points[index - 1]), null,
+          `${branch} segment ${index} cannot safely return along the same path`);
+        model.parts.forEach((part, partIndex) => {
+          if (part.kind !== 'inner') return;
+          const before = path.points[index - 1][partIndex], after = path.points[index][partIndex];
+          if (Math.abs(before[0] - after[0]) > 1e-8 || Math.abs(before[1] - after[1]) > 1e-8)
+            assert.ok(part.assemblyPosition[2] + before[2] > model.params.height,
+              'an insert must clear the outer box before its horizontal motion begins');
+        });
       }
       for (const distance of segmentSamples(path)) {
         assert.equal(oracle.firstOverlap(sampleMotion(plan, { branch, distance })), null,
@@ -82,12 +96,52 @@ function checkPlan(model: ModelData, plan: MotionPlan): void {
       assert.deepEqual(sampleMotion(plan, { branch: 'open', distance: plan.junction * fraction }),
         sampleMotion(plan, { branch: 'exploded', distance: plan.junction * fraction }));
     }
-    const spreadStart = plan.exploded.points[2];
+    const final = finalExplosion(plan);
     model.parts.forEach((part, index) => {
-      if (part.kind === 'inner') assert.ok(part.assemblyPosition[2] + spreadStart[index][2] > model.params.height,
-        'inserts must clear the outer box before any radial motion');
+      if (part.kind === 'inner') assert.ok(part.assemblyPosition[2] + final[index][2] > model.params.height,
+        'every fully exploded insert must be lifted out of the outer box, including centered rings');
     });
-  } finally { oracle.dispose(); }
+  } finally { continuous.dispose(); oracle.dispose(); }
+}
+
+function finalExplosion(plan: MotionPlan): MotionOffsets {
+  return sampleMotion(plan, { branch: 'exploded', distance: pathLength(plan.exploded) });
+}
+
+function onionGroups(size: number): number[][] {
+  const groups: number[][] = [];
+  for (let layer = 0; layer < Math.ceil(size / 2); layer++) {
+    const cells: number[] = [];
+    for (let row = layer; row < size - layer; row++) for (let col = layer; col < size - layer; col++) {
+      if (row === layer || col === layer || row === size - layer - 1 || col === size - layer - 1)
+        cells.push(row * size + col);
+    }
+    groups.push(cells);
+  }
+  return groups;
+}
+
+function checkNestedLayers(model: ModelData, plan: MotionPlan, outsideToInside: number[][]): void {
+  const final = finalExplosion(plan);
+  const indices = outsideToInside.map(group => model.parts.findIndex(part =>
+    part.cellIds?.length === group.length && group.every(cell => part.cellIds!.includes(cell))));
+  assert.ok(indices.every(index => index >= 0));
+  for (let i = 1; i < indices.length; i++) {
+    const lower = indices[i - 1], upper = indices[i];
+    const lowerTop = model.parts[lower].assemblyPosition[2] + final[lower][2] + model.parts[lower].bounds[2];
+    const upperBottom = model.parts[upper].assemblyPosition[2] + final[upper][2];
+    assert.ok(upperBottom > lowerTop + 0.0001,
+      `${model.parts[upper].id} must be lifted above the surrounding ${model.parts[lower].id}, not hidden inside its ring`);
+  }
+}
+
+function checkFullSpread(model: ModelData, plan: MotionPlan): void {
+  const final = finalExplosion(plan);
+  model.parts.forEach((part, index) => {
+    if (part.kind !== 'inner') return;
+    for (const axis of [0, 1]) assert.ok(Math.abs(final[index][axis] - part.assemblyPosition[axis] * 1.1) < 0.0001,
+      `${part.id} must retain its full radial spread after obstacles are lifted into separate layers`);
+  });
 }
 
 test('all lid styles have collision-free assembled, open and exploded path endpoints and intermediate poses', () => {
@@ -95,29 +149,72 @@ test('all lid styles have collision-free assembled, open and exploded path endpo
     const model = buildModel(module, { ...DEFAULT_PARAMS, lidType });
     const plan = createMotionPlan(module, model);
     assert.equal(plan.spreadScale, 1, 'ordinary separate inserts should retain the full radial spread');
+    const final = finalExplosion(plan);
+    const heights = model.parts.flatMap((part, index) => part.kind === 'inner' ? [final[index][2]] : []);
+    assert.ok(Math.max(...heights) - Math.min(...heights) < EPSILON, 'ordinary inserts need only one shared layer');
+    checkFullSpread(model, plan);
     checkPlan(model, plan);
   }
 });
 
-test('an outer 4×4 ring limits the four central inserts before they pass through its walls', () => {
+test('a 4×4 ring stays below its four central inserts so every part keeps its full horizontal spread', () => {
   const params: Params = { ...DEFAULT_PARAMS, rows: 4, cols: 4 };
   const center = [5, 6, 9, 10];
   const ring = Array.from({ length: 16 }, (_, index) => index).filter(index => !center.includes(index));
   assert.equal(ring.length, 12);
   const model = buildModel(module, params, [ring, ...center.map(cell => [cell])]);
   const plan = createMotionPlan(module, model);
-  assert.ok(plan.spreadScale > 0 && plan.spreadScale < 1, 'a surrounding ring requires a reduced radial spread');
+  checkFullSpread(model, plan);
+  for (const cell of center) checkNestedLayers(model, plan, [ring, [cell]]);
   checkPlan(model, plan);
   const oracle = collisionOracle(model);
   try {
+    const final = finalExplosion(plan);
+    const ringIndex = model.parts.findIndex(part => part.cellIds?.length === ring.length);
     const unsafeFullSpread = [0.25, 0.5, 0.75, 1].some(fraction => {
-      const offsets = plan.exploded.points[2].map((offset, index): Vec3 => model.parts[index].kind === 'inner'
+      const offsets = final.map((offset, index): Vec3 => model.parts[index].kind === 'inner'
         ? [model.parts[index].assemblyPosition[0] * 1.1 * fraction,
-          model.parts[index].assemblyPosition[1] * 1.1 * fraction, offset[2]] : [...offset]);
+          model.parts[index].assemblyPosition[1] * 1.1 * fraction, final[ringIndex][2]] : [...offset]);
       return oracle.firstOverlap(offsets) !== null;
     });
-    assert.ok(unsafeFullSpread, 'the regression must contain a real collision if radial clipping is removed');
+    assert.ok(unsafeFullSpread, 'the regression must contain a real collision when its additional layers are removed');
   } finally { oracle.dispose(); }
+});
+
+test('a centered insert rises above a 3×3 ring even though its radial displacement is zero', () => {
+  const groups = onionGroups(3);
+  const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, groups);
+  const plan = createMotionPlan(module, model);
+  checkNestedLayers(model, plan, groups);
+  checkFullSpread(model, plan);
+  const center = model.parts.findIndex(part => part.cellIds?.length === 1);
+  assert.ok(finalExplosion(plan)[center].slice(0, 2).every(value => Math.abs(value) < EPSILON));
+  checkPlan(model, plan);
+});
+
+test('nested rings get successive visible layers independent of input group ordering', () => {
+  for (const size of [5, 6]) {
+    const groups = onionGroups(size);
+    const permuted = [groups[2], groups[0], groups[1]];
+    const model = buildModel(module, { ...DEFAULT_PARAMS, rows: size, cols: size }, permuted);
+    const plan = createMotionPlan(module, model);
+    checkNestedLayers(model, plan, groups);
+    checkFullSpread(model, plan);
+    checkPlan(model, plan);
+  }
+});
+
+test('layer clearance uses independently edited heights and leaves room for every lid style', () => {
+  const groups = onionGroups(5);
+  for (const lidType of ['none', 'sleeve', 'inset'] as const) {
+    const params: Params = { ...DEFAULT_PARAMS, height: 80, rows: 5, cols: 5, lidType };
+    const overrides = Object.fromEntries(groups.map((group, index) => [partOverrideKey(group), { height: [55, 12, 40][index] }]));
+    const model = buildModel(module, params, groups, overrides);
+    const plan = createMotionPlan(module, model);
+    checkNestedLayers(model, plan, groups);
+    checkFullSpread(model, plan);
+    checkPlan(model, plan);
+  }
 });
 
 test('L-shaped groups, independently resized parts and extreme heights retain safe paths', () => {
@@ -143,14 +240,15 @@ test('rapid mode changes and reversed explosion sliders retrace their branch bef
   const oracle = collisionOracle(model);
   let cursor: MotionCursor = { branch: 'exploded', distance: pathLength(plan.exploded) };
   let switched = 0, backwards = 0;
+  const settleFrames = Math.ceil((pathLength(plan.open) + pathLength(plan.exploded)) / (plan.speed * 0.04)) + 5;
   const commands: { mode: ViewMode; explosion: number; frames: number }[] = [
     { mode: 'open', explosion: 100, frames: 2 },
     { mode: 'exploded', explosion: 15, frames: 3 },
-    { mode: 'open', explosion: 100, frames: 24 },
-    { mode: 'exploded', explosion: 100, frames: 30 },
-    { mode: 'exploded', explosion: 0, frames: 30 },
-    { mode: 'exploded', explosion: 100, frames: 30 },
-    { mode: 'assembly', explosion: 100, frames: 30 },
+    { mode: 'open', explosion: 100, frames: settleFrames },
+    { mode: 'exploded', explosion: 100, frames: settleFrames },
+    { mode: 'exploded', explosion: 0, frames: settleFrames },
+    { mode: 'exploded', explosion: 100, frames: settleFrames },
+    { mode: 'assembly', explosion: 100, frames: settleFrames },
   ];
   try {
     for (const command of commands) for (let frame = 0; frame < command.frames; frame++) {
@@ -182,9 +280,10 @@ test('rapid mode changes and reversed explosion sliders retrace their branch bef
   } finally { oracle.dispose(); }
 });
 
-test('display motion leaves assembly transforms and canonical STL geometry unchanged', () => {
-  const model = buildModel(module, DEFAULT_PARAMS);
+test('layered display motion leaves assembly transforms and canonical STEP/STL geometry unchanged', () => {
+  const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 5, cols: 5 }, onionGroups(5));
   const stls = model.parts.map(serializeSTL);
+  const step = serializeSTEP(model.parts).split('\nDATA;\n')[1];
   const positions = model.parts.map(part => new Float32Array(part.positions));
   const indices = model.parts.map(part => new Uint32Array(part.indices));
   const transforms = model.parts.map(part => ({ position: [...part.assemblyPosition], rotation: part.assemblyRotation && [...part.assemblyRotation] }));
@@ -205,4 +304,5 @@ test('display motion leaves assembly transforms and canonical STL geometry uncha
     assert.deepEqual({ position: part.assemblyPosition, rotation: part.assemblyRotation }, transforms[index]);
     assert.deepEqual(serializeSTL(part), stls[index]);
   });
+  assert.equal(serializeSTEP(model.parts).split('\nDATA;\n')[1], step);
 });

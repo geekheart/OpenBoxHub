@@ -76,6 +76,7 @@ export default function Scene(props: Props) {
       const offsets = plan ? sampleMotion(plan, { branch, distance: live.current.mode === 'assembly' ? 0 : pathLength(plan[branch]) }) : null
       const box = new THREE.Box3()
       model?.parts.forEach((part, i) => {
+        if (!live.current.visible[part.kind]) return
         const position = new THREE.Vector3(...part.assemblyPosition).add(new THREE.Vector3(...(offsets?.[i] ?? [0, 0, 0])))
         const local = new THREE.Box3(new THREE.Vector3(-part.bounds[0] / 2, -part.bounds[1] / 2, 0), new THREE.Vector3(part.bounds[0] / 2, part.bounds[1] / 2, part.bounds[2]))
         const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(...(part.assemblyRotation ?? [0, 0, 0])))
@@ -89,9 +90,10 @@ export default function Scene(props: Props) {
       camera.far = Math.max(8000, scale * 15)
       camera.updateProjectionMatrix()
       const center = box.isEmpty() ? new THREE.Vector3(0, p.depth * 0.05, p.height * 0.8) : box.getCenter(new THREE.Vector3())
-      controls.target.copy(center)
-      const direction = (view === 'top' ? new THREE.Vector3(0, -0.0001, 1)
+      const direction = (view === 'current' ? camera.position.clone().sub(controls.target)
+        : view === 'top' ? new THREE.Vector3(0, -0.0001, 1)
         : view === 'front' ? new THREE.Vector3(0, -1, 0) : new THREE.Vector3(1.45, -1.82, 1.66)).normalize()
+      controls.target.copy(center)
       const right = new THREE.Vector3().crossVectors(camera.up, direction).normalize()
       const up = new THREE.Vector3().crossVectors(direction, right)
       const tanVertical = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 0.82
@@ -204,5 +206,6 @@ export default function Scene(props: Props) {
   }, [props.model])
 
   useEffect(() => { runtime.current?.fit(props.cameraView.name) }, [props.cameraView, props.mode])
+  useEffect(() => { runtime.current?.fit('current') }, [props.visible])
   return <div className="three-scene" ref={host} />
 }
