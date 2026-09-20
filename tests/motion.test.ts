@@ -144,6 +144,15 @@ function checkFullSpread(model: ModelData, plan: MotionPlan): void {
   });
 }
 
+function rotateCells(cells: number[], size: number): number[] {
+  return cells.map(cell => (cell % size) * size + size - 1 - Math.floor(cell / size)).sort((a, b) => a - b);
+}
+
+function fillWithSingleCells(size: number, groups: number[][]): number[][] {
+  const used = new Set(groups.flat());
+  return [...groups, ...Array.from({ length: size * size }, (_, cell) => cell).filter(cell => !used.has(cell)).map(cell => [cell])];
+}
+
 test('all lid styles have collision-free assembled, open and exploded path endpoints and intermediate poses', () => {
   for (const lidType of ['sleeve', 'inset', 'none'] as const) {
     const model = buildModel(module, { ...DEFAULT_PARAMS, lidType });
@@ -190,6 +199,74 @@ test('a centered insert rises above a 3×3 ring even though its radial displacem
   const center = model.parts.findIndex(part => part.cellIds?.length === 1);
   assert.ok(finalExplosion(plan)[center].slice(0, 2).every(value => Math.abs(value) < EPSILON));
   checkPlan(model, plan);
+});
+
+test('U-shaped pockets raise their center inserts in all four opening directions', () => {
+  let u = [0, 2, 3, 5, 6, 7, 8];
+  for (let direction = 0; direction < 4; direction++) {
+    const groups = fillWithSingleCells(3, [u, [4]]);
+    const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, groups);
+    const plan = createMotionPlan(module, model);
+    checkNestedLayers(model, plan, [u, [4]]);
+    checkFullSpread(model, plan);
+    checkPlan(model, plan);
+    u = rotateCells(u, 3);
+  }
+});
+
+test('a long center insert moving toward a U opening rises before spreading while still inside the arms', () => {
+  let u = [0, 2, 3, 5, 6, 7, 8], center = [1, 4];
+  for (let direction = 0; direction < 4; direction++) {
+    const lidType = (['none', 'sleeve', 'inset', 'inset'] as const)[direction];
+    const model = buildModel(module, { ...DEFAULT_PARAMS, height: 80, rows: 3, cols: 3, lidType }, [u, center], {
+      [partOverrideKey(u)]: { height: [55, 12, 40, 25][direction] },
+      [partOverrideKey(center)]: { height: [12, 40, 20, 55][direction] },
+    });
+    const plan = createMotionPlan(module, model);
+    checkNestedLayers(model, plan, [u, center]);
+    checkFullSpread(model, plan);
+    const final = finalExplosion(plan), uPart = model.parts[1], centerPart = model.parts[2];
+    assert.ok(Math.hypot(...final[2].slice(0, 2)) > 1, 'this regression must exercise nonzero horizontal center movement');
+    assert.ok([0, 1].every(axis => {
+      const uCenter = uPart.assemblyPosition[axis] + final[1][axis];
+      const blockCenter = centerPart.assemblyPosition[axis] + final[2][axis];
+      return Math.abs(uCenter - blockCenter) < (uPart.bounds[axis] + centerPart.bounds[axis]) / 2;
+    }), 'the center block must still overlap the U footprint after its full motion toward the opening');
+    checkPlan(model, plan);
+    u = rotateCells(u, 3); center = rotateCells(center, 3);
+  }
+});
+
+test('wide and interior U pockets also lift centered or co-moving inserts above their arms', () => {
+  const smallU = [0, 2, 3, 5, 6, 7, 8];
+  const fixtures = [
+    { size: 5, u: Array.from({ length: 25 }, (_, cell) => cell).filter(cell => cell % 5 === 0 || cell % 5 === 4 || Math.floor(cell / 5) === 4), center: 12 },
+    { size: 5, u: smallU.map(cell => (Math.floor(cell / 3) + 1) * 5 + cell % 3 + 1), center: 12 },
+    { size: 6, u: smallU.map(cell => (Math.floor(cell / 3) + 1) * 6 + cell % 3 + 1), center: 14 },
+  ];
+  for (const { size, u, center } of fixtures) {
+    // Put the contained box first: layer order must come from its shape, not IDs.
+    const groups = fillWithSingleCells(size, [[center], u]);
+    const model = buildModel(module, { ...DEFAULT_PARAMS, rows: size, cols: size, lidType: 'none' }, groups);
+    const plan = createMotionPlan(module, model);
+    checkNestedLayers(model, plan, [u, [center]]);
+    checkFullSpread(model, plan);
+    checkPlan(model, plan);
+  }
+});
+
+test('adjacent L-shaped corners do not create false pocket layers', () => {
+  let l = [0, 3, 6, 7, 8];
+  for (let direction = 0; direction < 4; direction++) {
+    const model = buildModel(module, { ...DEFAULT_PARAMS, rows: 3, cols: 3 }, fillWithSingleCells(3, [l]));
+    const plan = createMotionPlan(module, model), final = finalExplosion(plan);
+    const heights = model.parts.flatMap((part, index) => part.kind === 'inner' ? [final[index][2]] : []);
+    assert.ok(Math.max(...heights) - Math.min(...heights) < EPSILON,
+      'two adjacent L walls must not be treated as opposing U walls');
+    checkFullSpread(model, plan);
+    checkPlan(model, plan);
+    l = rotateCells(l, 3);
+  }
 });
 
 test('nested rings get successive visible layers independent of input group ordering', () => {

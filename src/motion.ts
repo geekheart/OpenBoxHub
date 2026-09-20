@@ -48,8 +48,8 @@ export function createMotionPlan(module: ManifoldToplevel, model: ModelData): Mo
   const lidLift = (insertTop: number): number => lidIndex < 0 ? 0 : Math.max(28, params.height * 0.85,
     insertTop + clearance - (parts[lidIndex].assemblyPosition[2] - parts[lidIndex].bounds[2]))
 
-  // Closed grid contours deserve a visible higher level even when a centered
-  // insert has zero radial travel and therefore produces no horizontal collision.
+  // Closed holes and open U/C-shaped pockets need separate levels even when
+  // their inserts have no relative radial travel and cannot trigger a collision.
   const higherThan = new Map(innerIndices.map(index => [index, new Set<number>()]))
   const { rows, cols } = params
   const neighbors = (cell: number): number[] => {
@@ -60,6 +60,13 @@ export function createMotionPlan(module: ManifoldToplevel, model: ModelData): Mo
   for (const container of innerIndices) {
     const occupied = new Set(parts[container].cellIds ?? [])
     if (!occupied.size) continue
+    const rowMin = Array<number>(rows).fill(cols), rowMax = Array<number>(rows).fill(-1)
+    const colMin = Array<number>(cols).fill(rows), colMax = Array<number>(cols).fill(-1)
+    for (const cell of occupied) {
+      const row = Math.floor(cell / cols), col = cell % cols
+      rowMin[row] = Math.min(rowMin[row], col); rowMax[row] = Math.max(rowMax[row], col)
+      colMin[col] = Math.min(colMin[col], row); colMax[col] = Math.max(colMax[col], row)
+    }
     const outside = new Set<number>(), queue: number[] = []
     for (let cell = 0; cell < rows * cols; cell++) {
       const row = Math.floor(cell / cols), col = cell % cols
@@ -70,10 +77,20 @@ export function createMotionPlan(module: ManifoldToplevel, model: ModelData): Mo
     for (let n = 0; n < queue.length; n++) for (const next of neighbors(queue[n])) {
       if (!occupied.has(next) && !outside.has(next)) { outside.add(next); queue.push(next) }
     }
+    // Opposite walls distinguish a U-shaped recess from an L-shaped corner.
+    // The complete contained group must fit inside this pocket, not merely
+    // overlap its bounding rectangle. These cells lie within the container's
+    // convex hull, so disjoint connected groups cannot mutually contain one another.
+    const inPocket = (cell: number): boolean => {
+      if (occupied.has(cell)) return false
+      if (!outside.has(cell)) return true
+      const row = Math.floor(cell / cols), col = cell % cols
+      return (rowMin[row] < col && col < rowMax[row]) || (colMin[col] < row && row < colMax[col])
+    }
     for (const contained of innerIndices) {
       if (contained === container) continue
       const cells = parts[contained].cellIds ?? []
-      if (cells.length && cells.every(cell => !occupied.has(cell) && !outside.has(cell))) higherThan.get(container)!.add(contained)
+      if (cells.length && cells.every(inPocket)) higherThan.get(container)!.add(contained)
     }
   }
 

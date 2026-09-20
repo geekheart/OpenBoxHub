@@ -52,7 +52,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [viewError, setViewError] = useState('')
   const [mode, setMode] = useState<ViewMode>('open')
-  const [explosion, setExplosion] = useState(70)
+  const [explosion, setExplosion] = useState(100)
   const [visible, setVisible] = useState({ outer: true, inner: true, lid: true })
   const [transparent, setTransparent] = useState(false)
   const [autoRotate, setAutoRotate] = useState(false)
