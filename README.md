@@ -1,3 +1,5 @@
+[简体中文](README.md) · [English](README.en.md)
+
 <div align="center">
   <img src="public/favicon.svg" width="64" height="64" alt="OpenBoxHub" />
   <h1>OpenBoxHub</h1>
@@ -20,6 +22,8 @@
 打开页面即可编辑参数。默认外盒为 **200 × 140 × 40 mm（外形尺寸）**，以现货飞机盒的 20 × 14 × 4 cm 规格作为尺寸起点，参考 [EPACKBOX 飞机盒规格](https://epackbox.com/products/mail-box-aircraft-box)。
 
 建模、预览与文件生成全部在浏览器内完成。参数通过 JSON 文件保存与恢复，页面不保存历史记录，刷新后回到默认设计。
+
+界面默认使用简体中文，页头可切换 **English**；也可直接打开[英文工作台](https://geekheart.github.io/OpenBoxHub/?lang=en)。切换语言会保留当前设计、选择与预览状态，仅更新界面和 URL，不保存设计到浏览器存储。页头 GitHub 图标可打开项目仓库。
 
 ## 可以做什么
 
@@ -153,8 +157,8 @@ pnpm dev --port 5173
 按 tag 发布示例（版本号按需修改）：
 
 ```bash
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 仅在本地创建 tag 不会触发部署；需将 tag 推送到 GitHub。tag 对应的提交须包含此工作流。
@@ -206,6 +210,9 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory dist
 ```text
 src/
 ├── App.tsx              # 参数、分组合并、界面与下载交互
+├── Language.tsx         # 语言上下文、URL 切换与 GitHub 入口
+├── i18n.ts              # 文案插值与核心诊断的展示翻译
+├── translations.json    # 中英文文案目录
 ├── PartInspector.tsx    # 选中零件的尺寸与厚度编辑
 ├── NumberField.tsx      # 数值输入
 ├── Scene.tsx            # Three.js 场景、视角与装配动画
@@ -231,7 +238,7 @@ pnpm test     # 几何与导出测试
 pnpm build    # TypeScript 检查与生产构建
 ```
 
-测试覆盖闭合有向边、Float32 坐标焊接与退化面、尺寸与体积、装配与运动路径碰撞、独立零件编辑、盖型互换、L 形与环形合并、镂空孔阵列、参数文件往返与无效输入，以及无需网络的 STEP/STL/ZIP 导出。
+测试覆盖闭合有向边、Float32 坐标焊接与退化面、尺寸与体积、装配与运动路径碰撞、独立零件编辑、盖型互换、L 形与环形合并、镂空孔阵列、参数文件往返与无效输入，以及无需网络的 STEP/STL/ZIP 导出。多语言测试覆盖 URL 选择、界面渲染、诊断翻译与文件/参数数据保留。
 
 独立 CAD 验证使用实际 FreeCAD：`scripts/verify-cad-step.py` 读取 STEP，检查实体、曲面、尺寸，并执行挤出和切除；`scripts/verify-freecad.py` 执行宏，修改高度与底厚，再保存、重开工程并再次重算。FreeCAD 只用于开发验证和用户二次设计，网页运行不需要安装它。
 
@@ -244,3 +251,11 @@ python scripts/verify-freecad.py test-results/cad-validation
 ```
 
 开发约定见 [AGENTS.md](AGENTS.md)，第三方 CAD 内核来源与许可见 [第三方说明](public/third-party/README.txt)。
+
+## 版本与许可
+
+当前版本为 **1.0.2**，本次增加中英文界面、GitHub 入口、英文文档与项目许可，详见 [更新记录](CHANGELOG.md) 和 [1.0.2 发布说明](docs/releases/v1.0.2.md)。
+
+本项目代码使用 [MIT License](LICENSE)，Copyright (c) 2026 geekheart。第三方库及 CAD 内核保留其独立许可；项目的 MIT 许可不替代它们的要求。Replicad 为 MIT，replicad-opencascadejs 为 LGPL-2.1-only，相关来源、许可证与 OCCT 例外随静态站点发布，见 [第三方说明](public/third-party/README.txt)。
+
+执行 `pnpm build` 时，Vite 直接读取根目录 `LICENSE` 并生成 `dist/LICENSE`，不维护第二份许可文本。`public/third-party/` 中的第三方许可与来源说明同时复制到 `dist/third-party/`，部署时请保留这些文件。

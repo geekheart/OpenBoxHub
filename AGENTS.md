@@ -150,3 +150,14 @@ Manifold、CrossSection 及运算产生的临时结果通常持有 WASM 句柄�
 - 保持 Vite 的相对 `base`，以支持 `https://geekheart.github.io/OpenBoxHub/` 的子路径。图片、Worker、WASM 不应依赖本机绝对路径。
 - 不提交 `node_modules/`、`dist/`、本地导出物、临时日志或认证信息。发布产物由 Actions 构建，不手工维护第二套站点代码。
 - 发布后确认工作流成功，并实际访问线上页面检查模型、静态资源和下载，再报告已上线。
+
+## 多语言与项目许可
+
+- 默认界面为简体中文，显式语言选择器固定 `id="language-select"`，值为 `zh-CN` / `en`，选项标签为「简体中文」/「English」。英文入口使用 `?lang=en`，中文入口移除该参数；保持其余 URL 参数和 hash。
+- `src/Language.tsx` 提供 React 语言上下文，`src/i18n.ts` / `src/translations.json` 提供翻译与核心诊断的界面适配。新增面板、按钮、说明、状态、错误、title、aria 与 3D 控件必须同时维护中文、英文；不得用页面 DOM 扫描替换文本。
+- 语言切换仅改变展示与 URL，不应重建模型、重置设计、取消独立参数或改变选择/装配展示。不要将语言添加到建模或导出 Worker 的 effect 依赖，不保存设计到任何浏览器存储。
+- 核心诊断保持规范消息，在 UI 边界翻译；新增含变量的诊断需加模板翻译与测试。用户输入、文件名、单位、JSON 键、稳定零件 ID 与已发布导出结构不得被翻译。模型零件名称仅在展示处适配，原始 CAD/manifest 数据不随语言变化。
+- GitHub 入口固定 `id="github-link"`，链接到 `https://github.com/geekheart/OpenBoxHub`，使用本地 SVG、`target="_blank"`、`rel="noopener noreferrer"` 和对应语言的可访问名。
+- `README.md` 为默认中文说明，`README.en.md` 是完整英文说明；两者顶部互链，功能、限制、版本、部署步骤和许可需同步。界面变化后更新实际截图；英文说明可明确标示共享截图展示中文界面。
+- 项目使用 `LICENSE` 中的 MIT 许可（Copyright (c) 2026 geekheart），package 的 license 为 MIT。保留第三方许可、来源、OCCT 例外说明与静态发布文件，MIT 不覆盖第三方依赖的独立许可。
+- 多语言回归覆盖英文入口、中文默认、切换保留设计、各参数页/弹窗/错误和 tooltip/aria，以及文件名与参数 JSON 未被翻译；运行 `pnpm test` 和 `pnpm build`，生产构建在仓库子路径下验证。

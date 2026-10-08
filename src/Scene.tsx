@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useTranslation } from './Language'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { ModelData, PartData, Params } from './types'
@@ -17,6 +18,7 @@ type Props = {
 type RenderPart = { data: PartData; mesh: THREE.Mesh; line: THREE.LineSegments }
 
 export default function Scene(props: Props) {
+  const { t } = useTranslation()
   const host = useRef<HTMLDivElement>(null)
   const live = useRef(props)
   live.current = props
@@ -34,7 +36,7 @@ export default function Scene(props: Props) {
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
     renderer.toneMappingExposure = 1.22
-    renderer.domElement.setAttribute('aria-label', '收纳盒三维预览，拖动旋转，滚轮缩放')
+    renderer.domElement.setAttribute('aria-label', t('收纳盒三维预览，拖动旋转，滚轮缩放'))
     container.appendChild(renderer.domElement)
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 8000)
@@ -205,6 +207,7 @@ export default function Scene(props: Props) {
     rt.fit(props.cameraView.name)
   }, [props.model])
 
+  useEffect(() => { runtime.current?.renderer.domElement.setAttribute('aria-label', t('收纳盒三维预览，拖动旋转，滚轮缩放')) }, [t])
   useEffect(() => { runtime.current?.fit(props.cameraView.name) }, [props.cameraView, props.mode])
   useEffect(() => { runtime.current?.fit('current') }, [props.visible])
   return <div className="three-scene" ref={host} />
